@@ -1287,30 +1287,56 @@ void kernel_candidates(data_t* data)
 	__shared__ uint s_cnts[64];
 	__shared__ uint s_is_col;
 	__shared__ uint s_sol_num;
+	__shared__ uint s_cnt;
 
 	uint tid = threadIdx.x;
-	if (!tid) {
-		s_is_col = 0;
-	}
-
-	for (int i = tid; i < 64; i += blockDim.x) {
-		s_cnts[i] = 0;
-	}
-
 	uint idx = blockIdx.x;
-	uint cnt = data->candidates.sol_nr[2];//r83
-	if (idx >= cnt) {
+	uint laneid = get_lane_id();
+	uint cnt;
+	uint encoded_row;
+
+	if (!tid)
+	{
+		s_is_col = 0;
+		s_cnt = data->candidates.sol_nr[2];//r83;
+	}
+
+	__syncthreads();
+
+	if (laneid == 0)
+	{
+		cnt = s_cnt;
+		if (idx < cnt)
+		{
+			encoded_row = data->sols[idx];
+		}
+	}
+
+	__syncthreads();
+
+	cnt = __shfl_sync(0xFFFFFFFF, cnt, 0);
+
+	if (idx >= cnt) 
+	{
 		return;
 	}
 
-	if (tid < 512) {
-		uint encoded_row = data->sols[idx];
+	for (int i = tid; i < 64; i += blockDim.x)
+	{
+		s_cnts[i] = 0;
+	}
+
+	encoded_row = __shfl_sync(0xFFFFFFFF, encoded_row, 0);
+
+	if (tid < 512) 
+	{
 		uint sl_row = encoded_row >> 20;
 		uint slot_a = encoded_row >> 10;
 		//uint block_count = blockDim.x;
 		//uint addr = row * 4864;
 		//char* addr_p = (char*)data + (row * 4864);
-		for(uint n = tid; n < 512; n += blockDim.x) {
+		for(uint n = tid; n < 512; n += blockDim.x) 
+		{
 			uint sl_slot = (n < 256 ? slot_a : encoded_row) & 0x3FF;
 			//round 8 is 8 bytes
 			uint r8_enc = data->round8.rows[sl_row].slots[sl_slot].y;//4
