@@ -1,0 +1,1096 @@
+#include <cstdint>
+#include <crypto/blake.hpp>
+#include <stratum/primitives/block.hpp>
+#include <stratum/streams.hpp>
+#include <stratum/arith/uint256.hpp>
+#include <ctime>
+
+using namespace crypto;
+
+#include "sols.h"
+
+#include "param.h"
+
+typedef unsigned char uchar;
+typedef uint64_t ulong;
+typedef uint32_t uint;
+
+#if NR_ROWS_LOG <= 16 && NR_SLOTS <= (1 << 8)
+
+#define ENCODE_INPUTS(row, slot0, slot1) \
+    ((row << 16) | ((slot1 & 0xff) << 8) | (slot0 & 0xff))
+#define DECODE_ROW(REF)   (REF >> 16)
+#define DECODE_SLOT1(REF) ((REF >> 8) & 0xff)
+#define DECODE_SLOT0(REF) (REF & 0xff)
+
+#elif NR_ROWS_LOG == 18 && NR_SLOTS <= (1 << 7)
+
+#define ENCODE_INPUTS(row, slot0, slot1) \
+    ((row << 14) | ((slot1 & 0x7f) << 7) | (slot0 & 0x7f))
+#define DECODE_ROW(REF)   (REF >> 14)
+#define DECODE_SLOT1(REF) ((REF >> 7) & 0x7f)
+#define DECODE_SLOT0(REF) (REF & 0x7f)
+
+#elif NR_ROWS_LOG == 19 && NR_SLOTS <= (1 << 6)
+
+#define ENCODE_INPUTS(row, slot0, slot1) \
+    ((row << 13) | ((slot1 & 0x3f) << 6) | (slot0 & 0x3f)) /* 1 spare bit */
+#define DECODE_ROW(REF)   (REF >> 13)
+#define DECODE_SLOT1(REF) ((REF >> 6) & 0x3f)
+#define DECODE_SLOT0(REF) (REF & 0x3f)
+
+#elif NR_ROWS_LOG == 20 && NR_SLOTS <= (1 << 6)
+
+#define ENCODE_INPUTS(row, slot0, slot1) \
+    ((row << 12) | ((slot1 & 0x3f) << 6) | (slot0 & 0x3f))
+#define DECODE_ROW(REF)   (REF >> 12)
+#define DECODE_SLOT1(REF) ((REF >> 6) & 0x3f)
+#define DECODE_SLOT0(REF) (REF & 0x3f)
+
+#else
+#error "unsupported NR_ROWS_LOG"
+#endif
+
+#define declare_lane_id()\
+unsigned int laneid;\
+asm volatile("mov.u32 %0, %laneid;\n" : "=r"(laneid));
+
+#define get_global_id() (blockIdx.x * blockDim.x + threadIdx.x)
+#define get_global_size() (gridDim.x * blockDim.x)
+
+#define xi_offset_for_round(round)	(8 + ((round) / 2) * 4)
+
+#define checkCudaErrors(call)								\
+do {														\
+	cudaError_t err = call;									\
+	if (cudaSuccess != err) {								\
+		char errorBuff[512];								\
+        sprintf_s(errorBuff, sizeof(errorBuff) - 1,			\
+			"CUDA error '%s' in func '%s' line %d",			\
+			cudaGetErrorString(err), __FUNCTION__, __LINE__);	\
+		printf("<error> %s\n", errorBuff); \
+		}														\
+} while (0)
+
+__device__ blake2b_state_t d_blake;
+
+__constant__ uint64_t blake_iv[] =
+{
+	0x6a09e667f3bcc908, 0xbb67ae8584caa73b,
+	0x3c6ef372fe94f82b, 0xa54ff53a5f1d36f1,
+	0x510e527fade682d1, 0x9b05688c2b3e6c1f,
+	0x1f83d9abfb41bd6b, 0x5be0cd19137e2179,
+};
+
+__global__ void kernel_init(char* rowCounter)
+{
+	((uint*)rowCounter)[get_global_id()] = 0;
+}
+
+__device__ uint ht_store(uint round, char *ht, uint i, ulong xi0, ulong xi1, ulong xi2, ulong xi3, uint *rowCounters)
+{
+	uint    row;
+	char       *p;
+	uint                cnt;
+#if NR_ROWS_LOG == 16
+	if (!(round % 2))
+		row = (xi0 & 0xffff);
+	else
+		// if we have in hex: "ab cd ef..." (little endian xi0) then this
+		// formula computes the row as 0xdebc. it skips the 'a' nibble as it
+		// is part of the PREFIX. The Xi will be stored starting with "ef...";
+		// 'e' will be considered padding and 'f' is part of the current PREFIX
+		row = ((xi0 & 0xf00) << 4) | ((xi0 & 0xf00000) >> 12) |
+		((xi0 & 0xf) << 4) | ((xi0 & 0xf000) >> 12);
+#elif NR_ROWS_LOG == 18
+	if (!(round % 2))
+		row = (xi0 & 0xffff) | ((xi0 & 0xc00000) >> 6);
+	else
+		row = ((xi0 & 0xc0000) >> 2) |
+		((xi0 & 0xf00) << 4) | ((xi0 & 0xf00000) >> 12) |
+		((xi0 & 0xf) << 4) | ((xi0 & 0xf000) >> 12);
+#elif NR_ROWS_LOG == 19
+	if (!(round % 2))
+		row = (xi0 & 0xffff) | ((xi0 & 0xe00000) >> 5);
+	else
+		row = ((xi0 & 0xe0000) >> 1) |
+		((xi0 & 0xf00) << 4) | ((xi0 & 0xf00000) >> 12) |
+		((xi0 & 0xf) << 4) | ((xi0 & 0xf000) >> 12);
+#elif NR_ROWS_LOG == 20
+	if (!(round % 2))
+		row = (xi0 & 0xffff) | ((xi0 & 0xf00000) >> 4);
+	else
+		row = ((xi0 & 0xf0000) >> 0) |
+		((xi0 & 0xf00) << 4) | ((xi0 & 0xf00000) >> 12) |
+		((xi0 & 0xf) << 4) | ((xi0 & 0xf000) >> 12);
+#else
+#error "unsupported NR_ROWS_LOG"
+#endif
+	xi0 = (xi0 >> 16) | (xi1 << (64 - 16));
+	xi1 = (xi1 >> 16) | (xi2 << (64 - 16));
+	xi2 = (xi2 >> 16) | (xi3 << (64 - 16));
+	p = ht + row * NR_SLOTS * SLOT_LEN;
+
+	uint rowIdx = row / ROWS_PER_UINT;
+	uint rowOffset = BITS_PER_ROW*(row%ROWS_PER_UINT);
+	uint xcnt = atomicAdd(rowCounters + rowIdx, 1u << rowOffset);
+	xcnt = (xcnt >> rowOffset) & ROW_MASK;
+	cnt = xcnt;
+	if (cnt >= NR_SLOTS) {
+		//atomicSub(rowCounters + rowIdx, 1u << rowOffset);
+		return 1;
+	}
+	p += cnt * SLOT_LEN + xi_offset_for_round(round);
+	// store "i" (always 4 bytes before Xi)
+	*(  uint *)(p - 4) = i;
+	if (round == 0 || round == 1)
+	{
+		// store 24 bytes
+		*(  ulong *)(p + 0) = xi0;
+		*(  ulong *)(p + 8) = xi1;
+		*(  ulong *)(p + 16) = xi2;
+	}
+	else if (round == 2)
+	{
+		// store 20 bytes
+		*(  uint *)(p + 0) = xi0;
+		*(  ulong *)(p + 4) = (xi0 >> 32) | (xi1 << 32);
+		*(  ulong *)(p + 12) = (xi1 >> 32) | (xi2 << 32);
+	}
+	else if (round == 3)
+	{
+		// store 16 bytes
+		*(  uint *)(p + 0) = xi0;
+		*(  ulong *)(p + 4) = (xi0 >> 32) | (xi1 << 32);
+		*(  uint *)(p + 12) = (xi1 >> 32);
+	}
+	else if (round == 4)
+	{
+		// store 16 bytes
+		*(  ulong *)(p + 0) = xi0;
+		*(  ulong *)(p + 8) = xi1;
+	}
+	else if (round == 5)
+	{
+		// store 12 bytes
+		*(  ulong *)(p + 0) = xi0;
+		*(  uint *)(p + 8) = xi1;
+	}
+	else if (round == 6 || round == 7)
+	{
+		// store 8 bytes
+		*(  uint *)(p + 0) = xi0;
+		*(  uint *)(p + 4) = (xi0 >> 32);
+	}
+	else if (round == 8)
+	{
+		// store 4 bytes
+		*(  uint *)(p + 0) = xi0;
+	}
+	return 0;
+}
+
+#define rotate(a, bits) ((a) << (bits)) | ((a) >> (64 - (bits)))
+
+#define mix(va, vb, vc, vd, x, y) \
+    va = (va + vb + x); \
+vd = rotate((vd ^ va), (ulong)64 - 32); \
+vc = (vc + vd); \
+vb = rotate((vb ^ vc), (ulong)64 - 24); \
+va = (va + vb + y); \
+vd = rotate((vd ^ va), (ulong)64 - 16); \
+vc = (vc + vd); \
+vb = rotate((vb ^ vc), (ulong)64 - 63);
+
+__global__ void kernel_round0(char* d_ht0, char* rowCounter0)
+{
+	__shared__ uint64_t vt[16];
+	if (threadIdx.x < 8) {
+		vt[threadIdx.x] = d_blake.h[threadIdx.x];
+		vt[8 + threadIdx.x] = blake_iv[threadIdx.x];
+	}
+
+	__syncthreads();
+
+	if (threadIdx.x == 0) {
+		vt[12] ^= ZCASH_BLOCK_HEADER_LEN + 4 /* length of "i" */;
+		// last block
+		vt[14] ^= (ulong)-1;
+	}
+
+	__syncthreads();
+
+	uint                tid = get_global_id();
+	uint                inputs_per_thread = NR_INPUTS / get_global_size();
+	uint                input = tid * inputs_per_thread;
+	uint                input_end = (tid + 1) * inputs_per_thread;
+	ulong v[16];
+	while (input < input_end)
+	{
+		// shift "i" to occupy the high 32 bits of the second ulong word in the
+		// message block
+		ulong word1 = (ulong)input << 32;
+		// init vector v
+		v[0] = vt[0];
+		v[1] = vt[1];
+		v[2] = vt[2];
+		v[3] = vt[3];
+		v[4] = vt[4];
+		v[5] = vt[5];
+		v[6] = vt[6];
+		v[7] = vt[7];
+		v[8] = vt[8];
+		v[9] = vt[9];
+		v[10] = vt[10];
+		v[11] = vt[11];
+		v[12] = vt[12];
+		v[13] = vt[13];
+		v[14] = vt[14];
+		v[15] = vt[15];
+
+		// round 1
+		mix(v[0], v[4], v[8], v[12], 0, word1);
+		mix(v[1], v[5], v[9], v[13], 0, 0);
+		mix(v[2], v[6], v[10], v[14], 0, 0);
+		mix(v[3], v[7], v[11], v[15], 0, 0);
+		mix(v[0], v[5], v[10], v[15], 0, 0);
+		mix(v[1], v[6], v[11], v[12], 0, 0);
+		mix(v[2], v[7], v[8], v[13], 0, 0);
+		mix(v[3], v[4], v[9], v[14], 0, 0);
+		// round 2
+		mix(v[0], v[4], v[8], v[12], 0, 0);
+		mix(v[1], v[5], v[9], v[13], 0, 0);
+		mix(v[2], v[6], v[10], v[14], 0, 0);
+		mix(v[3], v[7], v[11], v[15], 0, 0);
+		mix(v[0], v[5], v[10], v[15], word1, 0);
+		mix(v[1], v[6], v[11], v[12], 0, 0);
+		mix(v[2], v[7], v[8], v[13], 0, 0);
+		mix(v[3], v[4], v[9], v[14], 0, 0);
+		// round 3
+		mix(v[0], v[4], v[8], v[12], 0, 0);
+		mix(v[1], v[5], v[9], v[13], 0, 0);
+		mix(v[2], v[6], v[10], v[14], 0, 0);
+		mix(v[3], v[7], v[11], v[15], 0, 0);
+		mix(v[0], v[5], v[10], v[15], 0, 0);
+		mix(v[1], v[6], v[11], v[12], 0, 0);
+		mix(v[2], v[7], v[8], v[13], 0, word1);
+		mix(v[3], v[4], v[9], v[14], 0, 0);
+		// round 4
+		mix(v[0], v[4], v[8], v[12], 0, 0);
+		mix(v[1], v[5], v[9], v[13], 0, word1);
+		mix(v[2], v[6], v[10], v[14], 0, 0);
+		mix(v[3], v[7], v[11], v[15], 0, 0);
+		mix(v[0], v[5], v[10], v[15], 0, 0);
+		mix(v[1], v[6], v[11], v[12], 0, 0);
+		mix(v[2], v[7], v[8], v[13], 0, 0);
+		mix(v[3], v[4], v[9], v[14], 0, 0);
+		// round 5
+		mix(v[0], v[4], v[8], v[12], 0, 0);
+		mix(v[1], v[5], v[9], v[13], 0, 0);
+		mix(v[2], v[6], v[10], v[14], 0, 0);
+		mix(v[3], v[7], v[11], v[15], 0, 0);
+		mix(v[0], v[5], v[10], v[15], 0, word1);
+		mix(v[1], v[6], v[11], v[12], 0, 0);
+		mix(v[2], v[7], v[8], v[13], 0, 0);
+		mix(v[3], v[4], v[9], v[14], 0, 0);
+		// round 6
+		mix(v[0], v[4], v[8], v[12], 0, 0);
+		mix(v[1], v[5], v[9], v[13], 0, 0);
+		mix(v[2], v[6], v[10], v[14], 0, 0);
+		mix(v[3], v[7], v[11], v[15], 0, 0);
+		mix(v[0], v[5], v[10], v[15], 0, 0);
+		mix(v[1], v[6], v[11], v[12], 0, 0);
+		mix(v[2], v[7], v[8], v[13], 0, 0);
+		mix(v[3], v[4], v[9], v[14], word1, 0);
+		// round 7
+		mix(v[0], v[4], v[8], v[12], 0, 0);
+		mix(v[1], v[5], v[9], v[13], word1, 0);
+		mix(v[2], v[6], v[10], v[14], 0, 0);
+		mix(v[3], v[7], v[11], v[15], 0, 0);
+		mix(v[0], v[5], v[10], v[15], 0, 0);
+		mix(v[1], v[6], v[11], v[12], 0, 0);
+		mix(v[2], v[7], v[8], v[13], 0, 0);
+		mix(v[3], v[4], v[9], v[14], 0, 0);
+		// round 8
+		mix(v[0], v[4], v[8], v[12], 0, 0);
+		mix(v[1], v[5], v[9], v[13], 0, 0);
+		mix(v[2], v[6], v[10], v[14], 0, word1);
+		mix(v[3], v[7], v[11], v[15], 0, 0);
+		mix(v[0], v[5], v[10], v[15], 0, 0);
+		mix(v[1], v[6], v[11], v[12], 0, 0);
+		mix(v[2], v[7], v[8], v[13], 0, 0);
+		mix(v[3], v[4], v[9], v[14], 0, 0);
+		// round 9
+		mix(v[0], v[4], v[8], v[12], 0, 0);
+		mix(v[1], v[5], v[9], v[13], 0, 0);
+		mix(v[2], v[6], v[10], v[14], 0, 0);
+		mix(v[3], v[7], v[11], v[15], 0, 0);
+		mix(v[0], v[5], v[10], v[15], 0, 0);
+		mix(v[1], v[6], v[11], v[12], 0, 0);
+		mix(v[2], v[7], v[8], v[13], word1, 0);
+		mix(v[3], v[4], v[9], v[14], 0, 0);
+		// round 10
+		mix(v[0], v[4], v[8], v[12], 0, 0);
+		mix(v[1], v[5], v[9], v[13], 0, 0);
+		mix(v[2], v[6], v[10], v[14], 0, 0);
+		mix(v[3], v[7], v[11], v[15], word1, 0);
+		mix(v[0], v[5], v[10], v[15], 0, 0);
+		mix(v[1], v[6], v[11], v[12], 0, 0);
+		mix(v[2], v[7], v[8], v[13], 0, 0);
+		mix(v[3], v[4], v[9], v[14], 0, 0);
+		// round 11
+		mix(v[0], v[4], v[8], v[12], 0, word1);
+		mix(v[1], v[5], v[9], v[13], 0, 0);
+		mix(v[2], v[6], v[10], v[14], 0, 0);
+		mix(v[3], v[7], v[11], v[15], 0, 0);
+		mix(v[0], v[5], v[10], v[15], 0, 0);
+		mix(v[1], v[6], v[11], v[12], 0, 0);
+		mix(v[2], v[7], v[8], v[13], 0, 0);
+		mix(v[3], v[4], v[9], v[14], 0, 0);
+		// round 12
+		mix(v[0], v[4], v[8], v[12], 0, 0);
+		mix(v[1], v[5], v[9], v[13], 0, 0);
+		mix(v[2], v[6], v[10], v[14], 0, 0);
+		mix(v[3], v[7], v[11], v[15], 0, 0);
+		mix(v[0], v[5], v[10], v[15], word1, 0);
+		mix(v[1], v[6], v[11], v[12], 0, 0);
+		mix(v[2], v[7], v[8], v[13], 0, 0);
+		mix(v[3], v[4], v[9], v[14], 0, 0);
+
+		// compress v into the blake state; this produces the 50-byte hash
+		// (two Xi values)
+		ulong h[7];
+		h[0] = vt[0] ^ v[0] ^ v[8];
+		h[1] = vt[1] ^ v[1] ^ v[9];
+		h[2] = vt[2] ^ v[2] ^ v[10];
+		h[3] = vt[3] ^ v[3] ^ v[11];
+		h[4] = vt[4] ^ v[4] ^ v[12];
+		h[5] = vt[5] ^ v[5] ^ v[13];
+		h[6] = (vt[6] ^ v[6] ^ v[14]) & 0xffff;
+
+		// store the two Xi values in the hash table
+		ht_store(0, d_ht0, input * 2,
+			h[0],
+			h[1],
+			h[2],
+			h[3], (uint*)rowCounter0);
+
+		ht_store(0, d_ht0, input * 2 + 1,
+			(h[3] >> 8) | (h[4] << (64 - 8)),
+			(h[4] >> 8) | (h[5] << (64 - 8)),
+			(h[5] >> 8) | (h[6] << (64 - 8)),
+			(h[6] >> 8), (uint*)rowCounter0);
+
+		input++;
+	}
+
+}
+
+#if NR_ROWS_LOG <= 16 && NR_SLOTS <= (1 << 8)
+
+#define ENCODE_INPUTS(row, slot0, slot1) \
+    ((row << 16) | ((slot1 & 0xff) << 8) | (slot0 & 0xff))
+#define DECODE_ROW(REF)   (REF >> 16)
+#define DECODE_SLOT1(REF) ((REF >> 8) & 0xff)
+#define DECODE_SLOT0(REF) (REF & 0xff)
+
+#elif NR_ROWS_LOG == 18 && NR_SLOTS <= (1 << 7)
+
+#define ENCODE_INPUTS(row, slot0, slot1) \
+    ((row << 14) | ((slot1 & 0x7f) << 7) | (slot0 & 0x7f))
+#define DECODE_ROW(REF)   (REF >> 14)
+#define DECODE_SLOT1(REF) ((REF >> 7) & 0x7f)
+#define DECODE_SLOT0(REF) (REF & 0x7f)
+
+#elif NR_ROWS_LOG == 19 && NR_SLOTS <= (1 << 6)
+
+#define ENCODE_INPUTS(row, slot0, slot1) \
+    ((row << 13) | ((slot1 & 0x3f) << 6) | (slot0 & 0x3f)) /* 1 spare bit */
+#define DECODE_ROW(REF)   (REF >> 13)
+#define DECODE_SLOT1(REF) ((REF >> 6) & 0x3f)
+#define DECODE_SLOT0(REF) (REF & 0x3f)
+
+#elif NR_ROWS_LOG == 20 && NR_SLOTS <= (1 << 6)
+
+#define ENCODE_INPUTS(row, slot0, slot1) \
+    ((row << 12) | ((slot1 & 0x3f) << 6) | (slot0 & 0x3f))
+#define DECODE_ROW(REF)   (REF >> 12)
+#define DECODE_SLOT1(REF) ((REF >> 6) & 0x3f)
+#define DECODE_SLOT0(REF) (REF & 0x3f)
+
+#else
+#error "unsupported NR_ROWS_LOG"
+#endif
+
+/*
+** Access a half-aligned long, that is a long aligned on a 4-byte boundary.
+*/
+__device__ ulong half_aligned_long(ulong *p, uint offset)
+{
+	return
+		(((ulong)*( uint *)((char *)p + offset + 0)) << 0) |
+		(((ulong)*(uint *)((char *)p + offset + 4)) << 32);
+}
+
+/*
+** Access a well-aligned int.
+*/
+__device__ uint well_aligned_int(ulong *_p, uint offset)
+{
+	char *p = (char *)_p;
+	return *(uint *)(p + offset);
+}
+
+/*
+** XOR a pair of Xi values computed at "round - 1" and store the result in the
+** hash table being built for "round". Note that when building the table for
+** even rounds we need to skip 1 padding byte present in the "round - 1" table
+** (the "0xAB" byte mentioned in the description at the top of this file.) But
+** also note we can't load data directly past this byte because this would
+** cause an unaligned memory access which is undefined per the OpenCL spec.
+**
+** Return 0 if successfully stored, or 1 if the row overflowed.
+*/
+__device__ uint xor_and_store(uint round, char *ht_dst, uint row,	uint slot_a, uint slot_b, ulong *a, ulong *b, uint *rowCounters)
+{
+	ulong xi0, xi1, xi2;
+#if NR_ROWS_LOG >= 16 && NR_ROWS_LOG <= 20
+	// Note: for NR_ROWS_LOG == 20, for odd rounds, we could optimize by not
+	// storing the byte containing bits from the previous PREFIX block for
+	if (round == 1 || round == 2)
+	{
+		// xor 24 bytes
+		xi0 = *(a++) ^ *(b++);
+		xi1 = *(a++) ^ *(b++);
+		xi2 = *a ^ *b;
+		if (round == 2)
+		{
+			// skip padding byte
+			xi0 = (xi0 >> 8) | (xi1 << (64 - 8));
+			xi1 = (xi1 >> 8) | (xi2 << (64 - 8));
+			xi2 = (xi2 >> 8);
+		}
+	}
+	else if (round == 3)
+	{
+		// xor 20 bytes
+		xi0 = half_aligned_long(a, 0) ^ half_aligned_long(b, 0);
+		xi1 = half_aligned_long(a, 8) ^ half_aligned_long(b, 8);
+		xi2 = well_aligned_int(a, 16) ^ well_aligned_int(b, 16);
+	}
+	else if (round == 4 || round == 5)
+	{
+		// xor 16 bytes
+		xi0 = half_aligned_long(a, 0) ^ half_aligned_long(b, 0);
+		xi1 = half_aligned_long(a, 8) ^ half_aligned_long(b, 8);
+		xi2 = 0;
+		if (round == 4)
+		{
+			// skip padding byte
+			xi0 = (xi0 >> 8) | (xi1 << (64 - 8));
+			xi1 = (xi1 >> 8);
+		}
+	}
+	else if (round == 6)
+	{
+		// xor 12 bytes
+		xi0 = *a++ ^ *b++;
+		xi1 = *(uint *)a ^ *(uint *)b;
+		xi2 = 0;
+		if (round == 6)
+		{
+			// skip padding byte
+			xi0 = (xi0 >> 8) | (xi1 << (64 - 8));
+			xi1 = (xi1 >> 8);
+		}
+	}
+	else if (round == 7 || round == 8)
+	{
+		// xor 8 bytes
+		xi0 = half_aligned_long(a, 0) ^ half_aligned_long(b, 0);
+		xi1 = 0;
+		xi2 = 0;
+		if (round == 8)
+		{
+			// skip padding byte
+			xi0 = (xi0 >> 8);
+		}
+	}
+	// invalid solutions (which start happenning in round 5) have duplicate
+	// inputs and xor to zero, so discard them
+	if (!xi0 && !xi1)
+		return 0;
+#else
+#error "unsupported NR_ROWS_LOG"
+#endif
+	return ht_store(round, ht_dst, ENCODE_INPUTS(row, slot_a, slot_b), xi0, xi1, xi2, 0, rowCounters);
+}
+
+
+__device__ void equihash_round(uint round, char* ht_src, char* ht_dst, uint* rowCountersSrc, uint* rowCountersDst)
+{
+	declare_lane_id();
+
+	//some how get 32 threads to do 1 row
+	uint threadChunk = threadIdx.x / 32;
+	uint row = blockIdx.x + (threadChunk * gridDim.x);//start at this row (chunk == 0 - 7, which means each thread is in its only 1k chunk at the beginning)
+	uint xi_offset = xi_offset_for_round(round - 1);
+	uchar mask;
+	
+#if NR_ROWS_LOG == 16
+	mask = ((!(round % 2)) ? 0x0f : 0xf0);
+#elif NR_ROWS_LOG == 18
+	mask = ((!(round % 2)) ? 0x03 : 0x30);
+#elif NR_ROWS_LOG == 19
+	mask = ((!(round % 2)) ? 0x01 : 0x10);
+#elif NR_ROWS_LOG == 20
+	mask = 0; /* we can vastly simplify the code below */
+#else
+#error "unsupported NR_ROWS_LOG"
+#endif
+
+
+	for (; row < NR_ROWS; row += (gridDim.x * 8)) {//junp 8k at a time, 8k needs to be configurable??
+		char* p = (ht_src + row * NR_SLOTS * SLOT_LEN);
+		uint rowIdx = row / ROWS_PER_UINT;
+		uint rowOffset = BITS_PER_ROW * (row % ROWS_PER_UINT);
+		int cnt = (rowCountersSrc[rowIdx] >> rowOffset) & ROW_MASK;
+		cnt = min(cnt, (int)NR_SLOTS); // handle possible overflow in prev. round
+		p += xi_offset;
+		//at this point all the warps know they will be looping cnt amount of times
+		//ok so in the old version it reads the first byte of every slot
+		while(cnt > 1)
+		{
+			uchar first_word = *(p + SLOT_LEN * laneid) & mask;//mask the slot off right away
+  		    //we must unassign all the lanes after cnt since its shit reads
+			uint lane_mask = cnt > 31 ? 0xFFFFFFFF : ((1 << cnt) - 1);
+			uint unclaimed = lane_mask;//assuming laneid 0 is bit 0 ?
+			uint peers;
+			bool is_peer;
+			do {
+				int first_lane = __ffs(unclaimed);
+				uchar other_key = __shfl(first_word, first_lane - 1);
+				
+				//printf("R:[%u] FL:[%u] K:[%02X] MY:[%02X]\n", row, first_lane - 1, other_key, first_word);
+				is_peer = first_word == other_key;
+				peers = __ballot(is_peer);
+				unclaimed ^= (peers & lane_mask);//in cause peers match but are actually not counted
+			} while (!is_peer && unclaimed);
+			peers &= lane_mask;//only use the peers as high as count, yes there will be wasted threads of this isnt 0xFFFFFFFF, lets make sure its always pretty high...
+			
+			//ok i have the collisions now what we need to do is only process the collisions
+			//find the first peer i collided with
+			uint first = __ffs(peers) - 1;
+			peers &= (0xFFFFFFFE << laneid);
+			while (__any(peers)) {
+				uint next = __ffs(peers);
+				if (next) {
+					ulong* a = (ulong *)
+						(ht_src + row * NR_SLOTS * SLOT_LEN + laneid * SLOT_LEN + xi_offset);
+					ulong* b = (ulong *)
+						(ht_src + row * NR_SLOTS * SLOT_LEN + (next - 1) * SLOT_LEN + xi_offset);
+					xor_and_store(round, ht_dst, row, laneid, (next - 1), a, b, rowCountersDst);
+					peers ^= (1 << (next - 1));
+				}
+			}
+			cnt -= 32;
+			p += (SLOT_LEN * 32);
+		}
+	}
+}
+
+#define KERNEL_ROUND(N) \
+__global__  \
+void kernel_round ## N( char *ht_src,  char *ht_dst, char* rowCounterSrc, char* rowCounterDst) \
+{ \
+    equihash_round(N, ht_src, ht_dst, (uint*)rowCounterSrc, (uint*)rowCounterDst); \
+}
+
+KERNEL_ROUND(1)
+KERNEL_ROUND(2)
+//KERNEL_ROUND(3)
+KERNEL_ROUND(4)
+KERNEL_ROUND(5)
+KERNEL_ROUND(6)
+KERNEL_ROUND(7)
+
+
+__global__  
+void kernel_round3(char *ht_src, char *ht_dst, char* rowCounterSrc, char* rowCounterDst) 
+{ 
+    equihash_round(3, ht_src, ht_dst, (uint*)rowCounterSrc, (uint*)rowCounterDst); 
+}
+
+
+__global__  
+void kernel_round8(char *ht_src, char *ht_dst, char* rowCounterSrc, char* rowCounterDst, sols_t* sols)
+{ 
+	uint tid = get_global_id();
+    equihash_round(8, ht_src, ht_dst, (uint*)rowCounterSrc, (uint*)rowCounterDst);
+	if (!tid) {
+		sols->nr = sols->likely_invalids = 0;
+	}
+}
+
+__device__
+uint expand_ref(char *ht, uint xi_offset, uint row, uint slot)
+{
+	return *(uint *)(ht + row * NR_SLOTS * SLOT_LEN + slot * SLOT_LEN + xi_offset - 4);
+}
+
+__device__
+uint expand_refs(uint *ins, uint nr_inputs, char **htabs, uint round)
+{
+	char *ht = htabs[round % 2];
+	uint    i = nr_inputs - 1;
+	uint    j = nr_inputs * 2 - 1;
+	uint    xi_offset = xi_offset_for_round(round);
+	int     dup_to_watch = -1;
+	do
+	{
+		ins[j] = expand_ref(ht, xi_offset,
+			DECODE_ROW(ins[i]), DECODE_SLOT1(ins[i]));
+		ins[j - 1] = expand_ref(ht, xi_offset,
+			DECODE_ROW(ins[i]), DECODE_SLOT0(ins[i]));
+		if (!round)
+		{
+			if (dup_to_watch == -1)
+				dup_to_watch = ins[j];
+			else if (ins[j] == dup_to_watch || ins[j - 1] == dup_to_watch)
+				return 0;
+		}
+		if (!i)
+			break;
+		i--;
+		j -= 2;
+	} while (1);
+	return 1;
+}
+
+/*
+** Verify if a potential solution is in fact valid.
+*/
+__device__
+void potential_sol(char **htabs, sols_t *sols, uint ref0, uint ref1)
+{
+	uint  nr_values;
+	uint  values_tmp[(1 << PARAM_K)];
+	uint  sol_i;
+	uint  i;
+	nr_values = 0;
+	values_tmp[nr_values++] = ref0;
+	values_tmp[nr_values++] = ref1;
+	uint round = PARAM_K - 1;
+	do
+	{
+		round--;
+		if (!expand_refs(values_tmp, nr_values, htabs, round))
+			return;
+		nr_values *= 2;
+	} while (round > 0);
+	// solution appears valid, copy it to sols
+	sol_i = atomicAdd(&sols->nr, 1);
+	//printf("looks good\n");
+	if (sol_i >= MAX_SOLS)
+		return;
+	for (i = 0; i < (1 << PARAM_K); i++)
+		sols->values[sol_i][i] = values_tmp[i];
+	sols->valid[sol_i] = 1;
+}
+
+/*
+** Scan the hash tables to find Equihash solutions.
+*/
+
+__global__ 
+void kernel_sols(char *ht0, char *ht1, sols_t *sols, uint *rowCountersSrc, uint *rowCountersDst)
+{
+	uint    tid = get_global_id();
+	char *htabs[2] = { ht0, ht1 };
+//	char *hcounters[2] = { (char*)rowCountersSrc,  (char*)rowCountersDst };
+	uint    ht_i = (PARAM_K - 1) % 2; // table filled at last round
+	uint    cnt;
+	uint    xi_offset = xi_offset_for_round(PARAM_K - 1);
+	uint    i, j;
+	char *a, *b;
+	uint    ref_i, ref_j;
+	// it's ok for the collisions array to be so small, as if it fills up
+	// the potential solutions are likely invalid (many duplicate inputs)
+	ulong collisions;
+	uint    coll;
+#if NR_ROWS_LOG >= 16 && NR_ROWS_LOG <= 20
+	// in the final hash table, we are looking for a match on both the bits
+	// part of the previous PREFIX colliding bits, and the last PREFIX bits.
+	uint    mask = 0xffffff;
+#else
+#error "unsupported NR_ROWS_LOG"
+#endif
+	a = htabs[ht_i] + tid * NR_SLOTS * SLOT_LEN;
+	uint rowIdx = tid / ROWS_PER_UINT;
+	uint rowOffset = BITS_PER_ROW*(tid%ROWS_PER_UINT);
+	cnt = (rowCountersSrc[rowIdx] >> rowOffset) & ROW_MASK;
+	cnt = min(cnt, (uint)NR_SLOTS); // handle possible overflow in last round
+	coll = 0;
+	a += xi_offset;
+	for (i = 0; i < cnt; i++, a += SLOT_LEN) {
+		uint a_data = ((*(uint *)a) & mask);
+		ref_i = *(uint *)(a - 4);
+		for (j = i + 1, b = a + SLOT_LEN; j < cnt; j++, b += SLOT_LEN) {
+			if (a_data == ((*(uint *)b) & mask))
+			{
+				ref_j = *(uint *)(b - 4);
+				collisions = ((ulong)ref_i << 32) | ref_j;
+				goto exit1;
+
+			}
+		}
+	}
+
+	return;
+
+exit1:
+	potential_sol(htabs, sols, collisions >> 32, collisions & 0xffffffff);
+}
+
+struct context
+{
+	char* d_ht0;
+	char* d_ht1;
+	char* d_rowCounter0;
+	char* d_rowCounter1;
+	sols_t* d_sols;
+	sols_t* h_sols;
+
+	void init()
+	{
+		checkCudaErrors(cudaMalloc((void**)&d_ht0, HT_SIZE));
+		checkCudaErrors(cudaMalloc((void**)&d_ht1, HT_SIZE));
+
+		checkCudaErrors(cudaMalloc((void**)&d_rowCounter0, NR_ROWS));
+		checkCudaErrors(cudaMalloc((void**)&d_rowCounter1, NR_ROWS));
+
+		checkCudaErrors(cudaMalloc((void**)&d_sols, sizeof(sols_t)));
+		checkCudaErrors(cudaMallocHost((void**)&h_sols, sizeof(sols_t)));
+	}
+};
+
+context g_ctx;
+
+
+
+#define COLLISION_BIT_LENGTH (PARAM_N / (PARAM_K+1))
+#define COLLISION_BYTE_LENGTH ((COLLISION_BIT_LENGTH+7)/8)
+#define FINAL_FULL_WIDTH (2*COLLISION_BYTE_LENGTH+sizeof(uint32_t)*(1 << (PARAM_K)))
+
+#define NDIGITS   (PARAM_K+1)
+#define DIGITBITS (PARAM_N/(NDIGITS))
+#define PROOFSIZE (1u<<PARAM_K)
+#define COMPRESSED_PROOFSIZE ((COLLISION_BIT_LENGTH+1)*PROOFSIZE*4/(8*sizeof(uint32_t)))
+
+
+#include <mutex>
+struct speed_test
+{
+	using time_point = std::chrono::high_resolution_clock::time_point;
+
+	time_point m_start;
+	int m_interval;
+
+	speed_test(int interval)
+		: m_start(std::chrono::high_resolution_clock::now())
+		, m_interval(interval)
+	{
+
+	}
+
+	std::vector<time_point> solutions;
+	std::mutex sol_mutex;
+
+	void AddSolution() {
+		std::lock_guard<std::mutex> l(sol_mutex);
+		solutions.push_back(std::chrono::high_resolution_clock::now());
+	}
+
+	double GetSolutionSpeed()
+	{
+		return Get(solutions, sol_mutex);
+	}
+
+	double Get(std::vector<time_point>& buffer, std::mutex& mutex)
+	{
+		time_point now = std::chrono::high_resolution_clock::now();
+		time_point past = now - std::chrono::seconds(m_interval);
+		double interval = (double)m_interval;
+		if (past < m_start)
+		{
+			interval = ((double)std::chrono::duration_cast<std::chrono::milliseconds>(now - m_start).count()) / 1000;
+			past = m_start;
+		}
+		size_t total = 0;
+
+		mutex.lock();
+		for (std::vector<time_point>::iterator it = buffer.begin(); it != buffer.end();)
+		{
+			if ((*it) < past)
+			{
+				it = buffer.erase(it);
+			}
+			else
+			{
+				++total;
+				++it;
+			}
+		}
+		mutex.unlock();
+
+		return (double)total / (double)interval;
+	}
+
+};
+
+speed_test speed(300);
+
+static void solve(context& ctx, const char* header, unsigned int header_len, const char* nonce, unsigned int nonce_len)
+{
+	unsigned char mcontext[140];
+	memset(mcontext, 0, 140);
+	memcpy(mcontext, header, header_len);
+	memcpy(mcontext + header_len, nonce, nonce_len);
+
+	blake2b_state_t initialCtx;
+	zcash_blake2b_init(&initialCtx, ZCASH_HASH_LEN, PARAM_N, PARAM_K);
+	zcash_blake2b_update(&initialCtx, (const uint8_t*)mcontext, 128, 0);
+
+	checkCudaErrors(cudaMemcpyToSymbol(d_blake, &initialCtx, sizeof(blake2b_state_s), 0, cudaMemcpyHostToDevice));
+
+	char* d_ht0 = ctx.d_ht0;
+	char* d_ht1 = ctx.d_ht1;
+	char* d_rowCounter0 = ctx.d_rowCounter0;
+	char* d_rowCounter1 = ctx.d_rowCounter1;
+	sols_t* d_sols = ctx.d_sols;
+	sols_t* h_sols = ctx.h_sols;
+
+	constexpr unsigned int thread_count = 256;
+	constexpr unsigned int block_dim = NR_ROWS / thread_count;
+
+	kernel_init<<<NR_ROWS / ROWS_PER_UINT / 256, 256>>>(d_rowCounter0);
+	kernel_round0<<<2048, 256>>>(d_ht0, d_rowCounter0);
+	kernel_init<<<NR_ROWS / ROWS_PER_UINT / 256, 256>>>(d_rowCounter1);
+	kernel_round1<<<block_dim, thread_count >>>(d_ht0, d_ht1, d_rowCounter0, d_rowCounter1);
+	kernel_init<<<NR_ROWS / ROWS_PER_UINT / 256, 256>>>(d_rowCounter0);
+	kernel_round2<<<block_dim, thread_count >>>(d_ht1, d_ht0, d_rowCounter1, d_rowCounter0);
+	kernel_init<<<NR_ROWS / ROWS_PER_UINT / 256, 256>>>(d_rowCounter1);
+	kernel_round3<<<block_dim, thread_count >>>(d_ht0, d_ht1, d_rowCounter0, d_rowCounter1);
+	kernel_init<<<NR_ROWS / ROWS_PER_UINT / 256, 256>>>(d_rowCounter0);
+	kernel_round4<<<block_dim, thread_count >>>(d_ht1, d_ht0, d_rowCounter1, d_rowCounter0);
+	kernel_init<<<NR_ROWS / ROWS_PER_UINT / 256, 256>>>(d_rowCounter1);
+	kernel_round5<<<block_dim, thread_count >>>(d_ht0, d_ht1, d_rowCounter0, d_rowCounter1);
+	kernel_init<<<NR_ROWS / ROWS_PER_UINT / 256, 256>>>(d_rowCounter0);
+	kernel_round6<<<block_dim, thread_count >>>(d_ht1, d_ht0, d_rowCounter1, d_rowCounter0);
+	kernel_init<<<NR_ROWS / ROWS_PER_UINT / 256, 256>>>(d_rowCounter1);
+	kernel_round7<<<block_dim, thread_count >>>(d_ht0, d_ht1, d_rowCounter0, d_rowCounter1);
+	kernel_init<<<NR_ROWS / ROWS_PER_UINT / 256, 256>>>(d_rowCounter0);
+	kernel_round8<<<block_dim, thread_count >>>(d_ht1, d_ht0, d_rowCounter1, d_rowCounter0, d_sols);
+	kernel_sols<<<NR_ROWS / 256, 256>>>(d_ht0, d_ht1, d_sols, (uint*)d_rowCounter0, (uint*)d_rowCounter1);
+
+	
+	checkCudaErrors(cudaMemcpy(h_sols, d_sols, sizeof(sols_t), cudaMemcpyDeviceToHost));
+
+	if (h_sols->nr > MAX_SOLS)
+		h_sols->nr = MAX_SOLS;
+
+	for (unsigned sol_i = 0; sol_i < h_sols->nr; sol_i++) {
+		verify_sol(h_sols, sol_i);
+	}
+
+	uint8_t proof[COMPRESSED_PROOFSIZE * 2];
+	for (uint32_t i = 0; i < h_sols->nr; i++) {
+		if (h_sols->valid[i]) {
+			compress(proof, (uint32_t *)(h_sols->values[i]), 1 << PARAM_K);
+			speed.AddSolution();
+		}
+	}
+
+	return;
+}
+
+
+
+using stratum::primitives::CBlock;
+using stratum::primitives::CEquihashInput;
+using stratum::CDataStream;
+using stratum::arith::uint256;
+
+static std::vector<uint256*> benchmark_nonces;
+
+static void generate_nounces(int hashes)
+{
+	std::srand(std::time(0));
+	benchmark_nonces.push_back(new uint256());
+	benchmark_nonces.back()->begin()[31] = 1;
+	for (int i = 0; i < (hashes - 1); ++i)
+	{
+		benchmark_nonces.push_back(new uint256());
+		for (unsigned int i = 0; i < 32; ++i)
+			benchmark_nonces.back()->begin()[i] = std::rand() % 256;
+	}
+}
+
+static bool benchmark_solve(context& ctx, const CBlock& block, const char* header, unsigned int header_len)
+{
+	if (benchmark_nonces.empty()) {
+		return false;
+	}
+	
+	uint256* nonce = benchmark_nonces.front();
+	benchmark_nonces.erase(benchmark_nonces.begin());
+	
+	solve(ctx, header, header_len, (const char*)nonce->begin(), nonce->size());
+	
+	delete nonce;
+	
+	return true;
+}
+
+
+static int benchmark()
+{
+	try
+	{
+		CBlock pblock;
+		CEquihashInput I{ pblock };
+		CDataStream ss(stratum::SER_NETWORK, PROTOCOL_VERSION);
+		ss << I;
+
+		const char *tequihash_header = (char *)&ss[0];
+		unsigned int tequihash_header_len = ss.size();
+
+		while(benchmark_solve(g_ctx, pblock, tequihash_header, tequihash_header_len));
+	}
+	catch (const std::runtime_error &e)
+	{
+		exit(0);
+		return 0;
+	}
+	
+	return 0;
+}
+
+#include <thread>
+#include <atomic>
+int main()
+{
+	checkCudaErrors(cudaDeviceSetCacheConfig(cudaFuncCachePreferL1));
+
+	g_ctx.init();
+	const int nr = HT_SIZE;
+
+	//Step 1 - Generate nouces
+	generate_nounces(25);
+	
+	
+	std::atomic<bool> amdone = false;
+
+	std::thread tellme([&amdone]() {
+		for (; amdone.load() == false;) {
+			std::this_thread::sleep_for(std::chrono::seconds(2));
+			std::cout << speed.GetSolutionSpeed() << " Sols/s" << std::endl;
+		}
+	});
+	
+	benchmark();
+	
+	printf("final %.2f sols/s\n", speed.GetSolutionSpeed());
+	
+	amdone.store(true);
+	tellme.join();
+
+	return 0;
+}
+
+
+#if 0
+
+
+__global__ void round0_warp_read(uint32_t offset)
+{
+declare_lane_id();
+
+__shared__ uint64_t vt[16];
+uint32_t* vdt = (uint32_t*)&vt[0];
+vdt[laneid] = d_blake_test[laneid];
+
+uint64_t v[16];
+
+uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
+uint32_t inputs_per_thread = NR_ROWS / (gridDim.x * blockDim.x);
+
+if (!tid) {
+printf("inputs per thread %u\n", inputs_per_thread);
+}
+
+
+uint32_t input = (tid * inputs_per_thread) + offset;
+uint32_t input_end = ((tid + 1) * inputs_per_thread) + offset;
+
+while (input < input_end)
+{
+uint64_t word1 = (uint64_t)input << 32;
+
+v[0] = vdt[0];
+v[1] = vdt[1];
+v[2] = vdt[2];
+v[3] = vdt[3];
+v[4] = vdt[4];
+v[5] = vdt[5];
+v[6] = vdt[6];
+v[7] = vdt[7];
+v[8] = vdt[8];
+v[9] = vdt[9];
+v[10] = vdt[10];
+v[11] = vdt[11];
+v[12] = vdt[12];
+v[13] = vdt[13];
+v[14] = vdt[14];
+v[15] = vdt[15];
+
+v[12] ^= ZCASH_BLOCK_HEADER_LEN + 4 /* length of "i" */;
+// last block
+v[14] ^= (uint64_t)-1;
+
+sir_mix_a_lot(v, word1);
+
+uint64_t h[7];
+h[0] = vdt[0] ^ v[0] ^ v[8];
+h[1] = vdt[1] ^ v[1] ^ v[9];
+h[2] = vdt[2] ^ v[2] ^ v[10];
+h[3] = vdt[3] ^ v[3] ^ v[11];
+h[4] = vdt[4] ^ v[4] ^ v[12];
+h[5] = vdt[5] ^ v[5] ^ v[13];
+h[6] = (vdt[6] ^ v[6] ^ v[14]) & 0xffff;
+
+input++;
+	}
+}
+
+__global__ void round1()
+{
+	declare_lane_id();
+	declare_warp_id();
+
+
+}
+
+__global__ void shuffle()
+{
+	__shared__ unsigned int data[32];
+	int warpid = threadIdx.x / 32;
+	int laneid = threadIdx.x % 32;
+	asm volatile ("\n\t"
+		"mov.u32 %0, %laneid;\n\t"
+		"mov.u32 %1, %warpid;\n\t"
+		: "=r"(laneid), "=r"(warpid)
+		);
+}
+
+#endif
