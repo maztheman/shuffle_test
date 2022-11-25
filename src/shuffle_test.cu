@@ -524,14 +524,14 @@ void kernel_round1(data_t* data)
 	uint tid = threadIdx.x;
 	uint laneid = get_lane_id();
 
+	//if (tid < 256) {
+		s_cnt[tid&255] = 0;
+	//}
+
 	if (tid == 0) {
 		s_count = min(608, data->rowCounter0[idx]);
 		data->rowCounter0[idx] = 0;
 	}
-
-	//if (tid < 256) {
-		s_cnt[tid&255] = 0;
-	//}
 
 	__syncthreads();
 
@@ -693,24 +693,36 @@ void kernel_round3(data_t* data)
 	__shared__ uint16_t s_collisions[256 * 12];
 	__shared__ uint4 s_w0[608];
 	__shared__ uint s_w1[608];
-
+	__shared__ uint s_count;
 
 	uint* s_cnt = &data->bin_counter[blockIdx.x * 256];
 
 
 	uint idx = blockIdx.x;
-	uint count = min(data->rowCounter0[idx], 608);
+	uint count;
 	uint tid = threadIdx.x;
-
+	
+	uint laneid = get_lane_id();
 	//if (tid < 256) {
 		s_cnt[tid&255] = 0;
 	//}
 
-	__syncthreads();
-
-	if (tid == 0) {
+	if (tid == 0) 
+	{
+		s_count = min(data->rowCounter0[idx], 608);
 		data->rowCounter0[idx] = 0;
 	}
+
+	__syncthreads();
+
+	if (laneid == 0)
+	{
+		count = s_count;
+	}
+
+	__syncthreads();
+
+	count = __shfl_sync(0xFFFFFFFF, count, 0);
 
 	if (tid > 607) { return; }
 
@@ -771,22 +783,35 @@ void kernel_round4(data_t* data)
 {
 	__shared__ uint16_t s_collisions[256 * 12];
 	__shared__ uint4 s_w0[608];
+	__shared__ uint s_count;
 
 	uint* s_cnt = &data->bin_counter[blockIdx.x * 256];
 
 	uint idx = blockIdx.x;
-	uint count = min(data->rowCounter1[idx], 608);
+	uint count;
 	uint tid = threadIdx.x;
+	uint laneid = get_lane_id();
 
 	//if (tid < 256) {
 		s_cnt[tid&255] = 0;
 	//}
 
-	__syncthreads();
-
-	if (tid == 0) {
+	if (tid == 0)
+	{
+		s_count = min(data->rowCounter1[idx], 608);
 		data->rowCounter1[idx] = 0;
 	}
+
+	__syncthreads();
+
+	if (laneid == 0)
+	{
+		count = s_count;
+	}
+
+	__syncthreads();
+
+	count = __shfl_sync(0xFFFFFFFF, count, 0);
 
 	if (tid > 607) { return; }
 
@@ -842,22 +867,35 @@ void kernel_round5(data_t* data)
 {
 	__shared__ uint16_t s_collisions[3072];
 	__shared__ uint4 s_w0[608];
+	__shared__ uint s_count;
 	
 	uint* s_cnt = &data->bin_counter[blockIdx.x * 256];
 
 	uint idx = blockIdx.x;
-	uint count = min(data->rowCounter0[idx], 608);
+	uint count;
 	uint tid = threadIdx.x;
+	uint laneid = get_lane_id();
 
 	//if (tid < 256) {
 		s_cnt[tid&255] = 0;
 	//}
 
-	__syncthreads();
-
-	if (tid == 0) {
+	if (tid == 0)
+	{
+		s_count = min(data->rowCounter0[idx], 608);
 		data->rowCounter0[idx] = 0;
 	}
+
+	__syncthreads();
+
+	if (laneid == 0)
+	{
+		count = s_count;
+	}
+
+	__syncthreads();
+
+	__shfl_sync(0xFFFFFFFF, count, 0);
 
 	if (tid > 607) { return; }
 
@@ -917,22 +955,29 @@ void kernel_round6(data_t* data)
 
 	uint idx = blockIdx.x;
 	uint tid = threadIdx.x;
-
-	if (!tid) {
-		s_row_count = min(data->rowCounter1[idx], 608);
-	}
+	uint count;
+	uint laneid = get_lane_id();
 
 	//if (tid < 256) {
 		s_cnt[tid&255] = 0;
 	//}
 
-	__syncthreads();
-
-	uint count = s_row_count;
-
-	if (tid == 0) {
+	if (tid == 0)
+	{
+		s_row_count = min(data->rowCounter1[idx], 608);
 		data->rowCounter1[idx] = 0;
 	}
+
+	__syncthreads();
+
+	if (laneid == 0)
+	{
+		count = s_row_count;
+	}
+
+	__syncthreads();
+
+	count = __shfl_sync(0xFFFFFFFF, count, 0);
 
 	if (tid > 607) { return; }
 
@@ -990,22 +1035,35 @@ void kernel_round7(data_t* data)
 {
 	__shared__ uint16_t s_collisions[3072];
 	__shared__ uint4 s_w0[608];
-	
+	__shared__ uint s_count;
+
 	uint* s_cnt = &data->bin_counter[blockIdx.x * 256];
 
 	uint idx = blockIdx.x;
-	uint count = min(data->rowCounter0[idx], 608);
+	uint count;
 	uint tid = threadIdx.x;
+	uint laneid = get_lane_id();
 
 	//if (tid < 256) {
 		s_cnt[tid&255] = 0;
 	//}
 
-	__syncthreads();
-
-	if (tid == 0) {
+	if (tid == 0) 
+	{
+		s_count = min(data->rowCounter0[idx], 608);
 		data->rowCounter0[idx] = 0;
 	}
+
+	__syncthreads();
+
+	if (laneid == 0)
+	{
+		count = s_count;
+	}
+
+	__syncthreads();
+
+	count = __shfl_sync(0xFFFFFFFF, count, 0);
 
 	if (tid > 607) { return; }
 
@@ -1061,22 +1119,35 @@ void kernel_round8(data_t* data)
 	__shared__ uint16_t s_collisions[3072];
 	__shared__ uint2 s_w0[608];
 	__shared__ uint s_cnt[256];
+	__shared__ uint s_count;
 
 	//uint* s_cnt = &data->bin_counter[blockIdx.x * 256];
 
 	uint idx = blockIdx.x;
-	uint count = min(data->rowCounter1[idx], 608);
+	uint count;
 	uint tid = threadIdx.x;
+	uint laneid = get_lane_id();
 
 	//if (tid < 256) {
 		s_cnt[tid&255] = 0;
 	//}
 
-	__syncthreads();
-
-	if (tid == 0) {
+	if (tid == 0)
+	{
+		s_count = min(data->rowCounter1[idx], 608); 
 		data->rowCounter1[idx] = 0;
 	}
+
+	__syncthreads();
+
+	if (laneid == 0)
+	{
+		count = s_count;
+	}
+
+	__syncthreads();
+
+	count = __shfl_sync(0xFFFFFFFF, count, 0);
 
 	if (tid > 607) { return; }
 
@@ -1132,20 +1203,33 @@ void kernel_round9(data_t* data)
 	__shared__ uint		s_bincount[256];//256 counters, each index is the value, count is the current index
 	__shared__ uint2	s_slot1[608];//first 16 bytes
 	__shared__ uint16_t	s_collisions[3072];
+	__shared__ uint 	s_count;
 	
 	uint idx = blockIdx.x;
 	uint tid = threadIdx.x;
-	uint count = min(data->rowCounter0[idx], 608);
+	uint count;
+	uint laneid = get_lane_id();
 
 	//if (tid < 256) {
 		s_bincount[tid&255] = 0;//reset bin count
 	//}
 
-	__syncthreads();
-
-	if (tid == 0) {
+	if (tid == 0)
+	{
+		s_count = min(data->rowCounter0[idx], 608);
 		data->rowCounter0[idx] = 0;//reset counter after we read it
 	}
+
+	__syncthreads();
+
+	if (laneid == 0)
+	{
+		count = s_count;
+	}
+
+	__syncthreads();
+
+	count = __shfl_sync(0xFFFFFFFF, count, 0);
 
 	if (tid > 607) { return; }
 
