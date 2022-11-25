@@ -694,8 +694,9 @@ void kernel_round3(data_t* data)
 	__shared__ uint4 s_w0[608];
 	__shared__ uint s_w1[608];
 	__shared__ uint s_count;
+	__shared__ uint s_cnt[256];
 
-	uint* s_cnt = &data->bin_counter[blockIdx.x * 256];
+	//uint* s_cnt = &data->bin_counter[blockIdx.x * 256];
 
 
 	uint idx = blockIdx.x;
@@ -784,8 +785,9 @@ void kernel_round4(data_t* data)
 	__shared__ uint16_t s_collisions[256 * 12];
 	__shared__ uint4 s_w0[608];
 	__shared__ uint s_count;
+	__shared__ uint s_cnt[256];
 
-	uint* s_cnt = &data->bin_counter[blockIdx.x * 256];
+	//uint* s_cnt = &data->bin_counter[blockIdx.x * 256];
 
 	uint idx = blockIdx.x;
 	uint count;
@@ -868,8 +870,9 @@ void kernel_round5(data_t* data)
 	__shared__ uint16_t s_collisions[3072];
 	__shared__ uint4 s_w0[608];
 	__shared__ uint s_count;
-	
-	uint* s_cnt = &data->bin_counter[blockIdx.x * 256];
+	__shared__ uint s_cnt[256];
+
+	//uint* s_cnt = &data->bin_counter[blockIdx.x * 256];
 
 	uint idx = blockIdx.x;
 	uint count;
@@ -950,8 +953,9 @@ void kernel_round6(data_t* data)
 	__shared__ uint16_t s_collisions[3072];
 	__shared__ uint4 s_w0[608];
 	__shared__ uint s_row_count;
+	__shared__ uint s_cnt[256];
 
-	uint* s_cnt = &data->bin_counter[blockIdx.x * 256];
+	//uint* s_cnt = &data->bin_counter[blockIdx.x * 256];
 
 	uint idx = blockIdx.x;
 	uint tid = threadIdx.x;
@@ -1036,8 +1040,9 @@ void kernel_round7(data_t* data)
 	__shared__ uint16_t s_collisions[3072];
 	__shared__ uint4 s_w0[608];
 	__shared__ uint s_count;
+	__shared__ uint s_cnt[256];
 
-	uint* s_cnt = &data->bin_counter[blockIdx.x * 256];
+	//uint* s_cnt = &data->bin_counter[blockIdx.x * 256];
 
 	uint idx = blockIdx.x;
 	uint count;
