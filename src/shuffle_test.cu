@@ -533,6 +533,8 @@ void kernel_round1(data_t* data)
 		s_cnt[tid&255] = 0;
 	//}
 
+	__syncthreads();
+
 	if (laneid == 0) {
 		count = s_count;
 	}
@@ -626,6 +628,8 @@ void kernel_round2(data_t* data)
 	if (laneid == 0) {
 		count = s_row_count;
 	}
+
+	__syncthreads();
 
 	count = __shfl_sync(0xFFFFFFFF, count, 0);
 
