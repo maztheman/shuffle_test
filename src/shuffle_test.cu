@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <ctime>
+#include <execution>
 #include <vector_types.h>
 
 using namespace crypto;
@@ -527,9 +528,9 @@ void kernel_round1(data_t* data)
 	uint tid = threadIdx.x;
 	uint laneid = get_lane_id();
 
-	//if (tid < 256) {
-		s_cnt[tid&255] = 0;
-	//}
+	if (tid < 256) {
+		s_cnt[tid] = 0;
+	}
 
 	if (tid == 0)
 	{
@@ -611,16 +612,15 @@ void kernel_round2(data_t* data)
 	__shared__ uint s_cnt[256];
 	__shared__ uint s_row_count;
 
-	//uint* s_cnt = &data->bin_counter[blockIdx.x * 256];
-
 	uint idx = blockIdx.x;
 	uint count;
 	uint tid = threadIdx.x;
 	uint laneid = get_lane_id();
 
-	//if (tid < 256) {
-		s_cnt[tid&255] = 0;
-	//}
+	if (tid < 256) 
+	{
+		s_cnt[tid] = 0;
+	}
 
 	if (tid == 0) {
 		s_row_count = min(data->rowCounter1[idx], 608);
@@ -629,7 +629,8 @@ void kernel_round2(data_t* data)
 
 	__syncthreads();
 
-	if (laneid == 0) {
+	if (laneid == 0) 
+	{
 		count = s_row_count;
 	}
 
@@ -1288,7 +1289,7 @@ __launch_bounds__(608)
 
 
 __global__
-__launch_bounds__(128, 16)
+__launch_bounds__(128)
 void kernel_candidates(data_t* data)
 {
 	__shared__ uint s_candidate[512];
@@ -1337,59 +1338,55 @@ void kernel_candidates(data_t* data)
 
 	encoded_row = __shfl_sync(0xFFFFFFFF, encoded_row, 0);
 
-	if (tid < 512) 
+	uint sl_row = encoded_row >> 20;
+	uint slot_a = encoded_row >> 10;
+	//uint block_count = blockDim.x;
+	//uint addr = row * 4864;
+	//char* addr_p = (char*)data + (row * 4864);
+	for(uint n = tid; n < 512; n += blockDim.x) 
 	{
-		uint sl_row = encoded_row >> 20;
-		uint slot_a = encoded_row >> 10;
-		//uint block_count = blockDim.x;
-		//uint addr = row * 4864;
-		//char* addr_p = (char*)data + (row * 4864);
-		for(uint n = tid; n < 512; n += blockDim.x) 
-		{
-			uint sl_slot = (n < 256 ? slot_a : encoded_row) & 0x3FF;
-			//round 8 is 8 bytes
-			uint r8_enc = data->round8.rows[sl_row].slots[sl_slot].y;//4
-			uint r8_row = r8_enc >> 20;
-			uint r8_slot = ((n & 128) < 128 ? (r8_enc >> 10) : r8_enc) & 0x3FF;
-			//round 7 is 16 bytes
-			uint r7_enc = data->round7.rows[r8_row].slots[r8_slot].z;//8
-			uint r7_row = r7_enc >> 20;
-			uint r7_slot = ((n & 64) < 64 ? (r7_enc >> 10) : r7_enc) & 0x3FF;
-			//round 6 is 16 bytes
-			uint r6_enc = data->round6.rows[r7_row].slots[r7_slot].w;//12
-			uint r6_row = r6_enc >> 20;
-			uint r6_slot = ((n & 32) < 32 ? (r6_enc >> 10) : r6_enc) & 0x3FF;
-			//round 5 is 16 bytes ?
-			uint r5_enc = data->round5.rows[r6_row].slots[r6_slot].w;//12
-			uint r5_row = r5_enc >> 20;
-			uint r5_slot = ((n & 16) < 16 ? (r5_enc >> 10) : r5_enc) & 0x3FF;
-			//round 4 is 32 bytes ?
-			uint r4_enc = data->round4.rows[r5_row].slots[r5_slot].y.x;//16
-			uint r4_row = r4_enc >> 20;
-			uint r4_slot = ((n & 8) < 8 ? (r4_enc >> 10) : r4_enc) & 0x3FF;
-			//round 3 is 32 bytes
-			uint r3_enc = data->round3.rows[r4_row].slots[r4_slot].y.x;//16
-			uint r3_row = r3_enc >> 20;
-			uint r3_slot = ((n & 4) < 4 ? (r3_enc >> 10) : r3_enc) & 0x3FF;
-			//round 2 is 32 bytes
-			uint r2_enc = data->round2.rows[r3_row].slots[r3_slot].y.y;//20
-			uint r2_row = r2_enc >> 20;
-			uint r2_slot = ((n & 2) < 2 ? (r2_enc >> 10) : r2_enc) & 0x3FF;
-			//round 1 is 32 bytes
-			uint r1_enc = data->round1.rows[r2_row].slots[r2_slot].y.z;//24
-			uint r1_row = r1_enc >> 20;
-			uint r1_slot = (((n & 1) != 1) ? (r1_enc >> 10) : r1_enc) & 0x3FF;
-			//round 0 is 32 bytes
-			uint r0_enc = data->round0.rows[r1_row].slots[r1_slot].y.z;//24
-			s_candidate[n] = r0_enc;
-		}
+		uint sl_slot = (n < 256 ? slot_a : encoded_row) & 0x3FF;
+		//round 8 is 8 bytes
+		uint r8_enc = data->round8.rows[sl_row].slots[sl_slot].y;//4
+		uint r8_row = r8_enc >> 20;
+		uint r8_slot = ((n & 128) < 128 ? (r8_enc >> 10) : r8_enc) & 0x3FF;
+		//round 7 is 16 bytes
+		uint r7_enc = data->round7.rows[r8_row].slots[r8_slot].z;//8
+		uint r7_row = r7_enc >> 20;
+		uint r7_slot = ((n & 64) < 64 ? (r7_enc >> 10) : r7_enc) & 0x3FF;
+		//round 6 is 16 bytes
+		uint r6_enc = data->round6.rows[r7_row].slots[r7_slot].w;//12
+		uint r6_row = r6_enc >> 20;
+		uint r6_slot = ((n & 32) < 32 ? (r6_enc >> 10) : r6_enc) & 0x3FF;
+		//round 5 is 16 bytes ?
+		uint r5_enc = data->round5.rows[r6_row].slots[r6_slot].w;//12
+		uint r5_row = r5_enc >> 20;
+		uint r5_slot = ((n & 16) < 16 ? (r5_enc >> 10) : r5_enc) & 0x3FF;
+		//round 4 is 32 bytes ?
+		uint r4_enc = data->round4.rows[r5_row].slots[r5_slot].y.x;//16
+		uint r4_row = r4_enc >> 20;
+		uint r4_slot = ((n & 8) < 8 ? (r4_enc >> 10) : r4_enc) & 0x3FF;
+		//round 3 is 32 bytes
+		uint r3_enc = data->round3.rows[r4_row].slots[r4_slot].y.x;//16
+		uint r3_row = r3_enc >> 20;
+		uint r3_slot = ((n & 4) < 4 ? (r3_enc >> 10) : r3_enc) & 0x3FF;
+		//round 2 is 32 bytes
+		uint r2_enc = data->round2.rows[r3_row].slots[r3_slot].y.y;//20
+		uint r2_row = r2_enc >> 20;
+		uint r2_slot = ((n & 2) < 2 ? (r2_enc >> 10) : r2_enc) & 0x3FF;
+		//round 1 is 32 bytes
+		uint r1_enc = data->round1.rows[r2_row].slots[r2_slot].y.z;//24
+		uint r1_row = r1_enc >> 20;
+		uint r1_slot = (((n & 1) != 1) ? (r1_enc >> 10) : r1_enc) & 0x3FF;
+		//round 0 is 32 bytes
+		uint r0_enc = data->round0.rows[r1_row].slots[r1_slot].y.z;//24
+		s_candidate[n] = r0_enc;
 	}
-
-	bool rc = tid < 512;
 
 	__syncthreads();
 
-	for (uint n = tid; n < 512; n += blockDim.x) {
+	for (uint n = tid; n < 512; n += blockDim.x)
+	{
 		uint cand = s_candidate[n];
 		uint cand_xx = cand & 63;
 		uint cnt = atomicAdd(&s_cnts[cand_xx], 1);
@@ -1624,11 +1621,10 @@ void kernel_candidates(data_t* data)
 		}
 	}
 
-	rc = tid == 0;
-
 	__syncthreads();
 
-	if (rc) {
+	if (tid == 0) 
+	{
 		uint solc = atomicAdd(&data->candidates.sol_nr[0], 1);
 		s_sol_num = solc;
 	}
@@ -1640,7 +1636,8 @@ void kernel_candidates(data_t* data)
 		int r76 = tid_idx + 3;
 		uint* p_cand = &data->candidates.vals[solc][tid_idx];
 		uint* p_s_cand = &s_candidate[tid_idx];
-		for (int r275 = (int)tid_idx - 1; r275 < r76; r275++, p_cand++, p_s_cand++) {
+		for (int r275 = (int)tid_idx - 1; r275 < r76; r275++, p_cand++, p_s_cand++)
+		{
 			*p_cand = *p_s_cand;
 		}
 	}
@@ -1673,14 +1670,14 @@ struct context
 };
 
 
-#define COLLISION_BIT_LENGTH (PARAM_N / (PARAM_K+1))
-#define COLLISION_BYTE_LENGTH ((COLLISION_BIT_LENGTH+7)/8)
-#define FINAL_FULL_WIDTH (2*COLLISION_BYTE_LENGTH+sizeof(uint32_t)*(1 << (PARAM_K)))
+static constexpr auto COLLISION_BIT_LENGTH = (PARAM_N / (PARAM_K+1));
+//static constexpr auto COLLISION_BYTE_LENGTH = ((COLLISION_BIT_LENGTH+7)/8);
+//static constexpr auto FINAL_FULL_WIDTH = (2*COLLISION_BYTE_LENGTH+sizeof(uint32_t)*(1 << (PARAM_K)));
 
-#define NDIGITS   (PARAM_K+1)
-#define DIGITBITS (PARAM_N/(NDIGITS))
-#define PROOFSIZE (1u<<PARAM_K)
-#define COMPRESSED_PROOFSIZE ((COLLISION_BIT_LENGTH+1)*PROOFSIZE*4/(8*sizeof(uint32_t)))
+//static constexpr auto NDIGITS = (PARAM_K+1);
+//static constexpr auto DIGITBITS = (PARAM_N/(NDIGITS));
+static constexpr auto PROOFSIZE = (1u<<PARAM_K);
+static constexpr auto COMPRESSED_PROOFSIZE = ((COLLISION_BIT_LENGTH+1)*PROOFSIZE*4/(8*sizeof(uint32_t)));
 
 
 #include <mutex>
@@ -1928,19 +1925,19 @@ static void solve(context& ctx, const char* header, unsigned int header_len, con
 	
 	ctx.h_candidates->sol_nr[0] = min(16, ctx.h_candidates->sol_nr[0]);
 
-	//uint8_t valid[16] = { 0 };
-	//for (unsigned sol_i = 0; sol_i < ctx.h_candidates->sol_nr[0]; sol_i++) {
-	//	verify_sol(ctx.h_candidates, sol_i, valid);
-	//}
+	uint8_t valid[16] = { 0 };
+	for (unsigned sol_i = 0; sol_i < ctx.h_candidates->sol_nr[0]; sol_i++) {
+		verify_sol(ctx.h_candidates, sol_i, valid);
+	}
 
 	int sols_found = 0;
 	uint8_t proof[COMPRESSED_PROOFSIZE * 2];
 	for (uint32_t i = 0; i < ctx.h_candidates->sol_nr[0]; i++) {
-		//if (valid[i]) {
-			compress(proof, (uint32_t *)(ctx.h_candidates->vals[i]), 1 << PARAM_K);
+		if (valid[i]) {
+			compress(proof, (uint32_t *)(ctx.h_candidates->vals[i]));
 			speed.AddSolution();
 			sols_found++;
-		//}
+		}
 	}
 }
 
@@ -2017,7 +2014,7 @@ int main()
 	g_ctx.init();
 
 	//Step 1 - Generate nouces
-	generate_nounces(1000);
+	generate_nounces(3500);
 
 	std::atomic<int> amdone(0);
 
