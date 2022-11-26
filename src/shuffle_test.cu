@@ -202,7 +202,7 @@ void test(const ulong (&blakey)[SIZE])
 }*/
 
 __global__
-__launch_bounds__(256, 16)
+__launch_bounds__(256)
 void kernel_round0(data_t* data, const uint4 *  bla)
 {
 	uint* rowCounter = data->rowCounter0;
@@ -510,13 +510,16 @@ void kernel_round0(data_t* data, const uint4 *  bla)
 }
 
 __global__
-__launch_bounds__(608, 16)
+__launch_bounds__(608)
 void kernel_round1(data_t* data)
 {
-	__shared__ uint16_t s_collisions[3072];
+    const size_t BIN_CNT = 256;
+    const size_t MAX_COLL = 12;
+    const size_t COLL_SIZE = BIN_CNT * MAX_COLL;
+	__shared__ uint16_t s_collisions[COLL_SIZE];
 	__shared__ uint4 s_w0[608];
 	__shared__ uint2 s_w1[608];
-	__shared__ uint s_cnt[256];
+	__shared__ uint s_cnt[BIN_CNT];
 	__shared__ uint s_count;
 
 	uint count;
@@ -528,12 +531,13 @@ void kernel_round1(data_t* data)
 		s_cnt[tid&255] = 0;
 	//}
 
-	if (tid == 0) {
+	if (tid == 0)
+	{
 		s_count = min(608, data->rowCounter0[idx]);
 		data->rowCounter0[idx] = 0;
 	}
 
-	__syncthreads();
+    __syncthreads();
 
 	if (laneid == 0) {
 		count = s_count;
@@ -598,7 +602,7 @@ void kernel_round1(data_t* data)
 
 
 __global__
-__launch_bounds__(608, 16)
+__launch_bounds__(608)
 void kernel_round2(data_t* data)
 {
 	__shared__ uint16_t s_collisions[3072];
@@ -687,7 +691,7 @@ void kernel_round2(data_t* data)
 
 
 __global__
-__launch_bounds__(608, 16)
+__launch_bounds__(608)
 void kernel_round3(data_t* data)
 {
 	__shared__ uint16_t s_collisions[256 * 12];
@@ -779,7 +783,7 @@ void kernel_round3(data_t* data)
 
 
 __global__
-__launch_bounds__(608, 16)
+__launch_bounds__(608)
 void kernel_round4(data_t* data)
 {
 	__shared__ uint16_t s_collisions[256 * 12];
@@ -864,7 +868,7 @@ void kernel_round4(data_t* data)
 }
 
 __global__
-__launch_bounds__(608, 16)
+__launch_bounds__(608)
 void kernel_round5(data_t* data)
 {
 	__shared__ uint16_t s_collisions[3072];
@@ -947,7 +951,7 @@ void kernel_round5(data_t* data)
 }
 
 __global__
-__launch_bounds__(608, 16)
+__launch_bounds__(608)
 void kernel_round6(data_t* data)
 {
 	__shared__ uint16_t s_collisions[3072];
@@ -1034,7 +1038,7 @@ void kernel_round6(data_t* data)
 }
 
 __global__
-__launch_bounds__(608, 16)
+__launch_bounds__(608)
 void kernel_round7(data_t* data)
 {
 	__shared__ uint16_t s_collisions[3072];
@@ -1117,7 +1121,7 @@ void kernel_round7(data_t* data)
 
 
 __global__
-__launch_bounds__(608, 16)
+__launch_bounds__(608)
 void kernel_round8(data_t* data)
 {
 
@@ -1202,8 +1206,8 @@ void kernel_round8(data_t* data)
 }
 
 __global__
-__launch_bounds__(608, 16)
-void kernel_round9(data_t* data)
+__launch_bounds__(608)
+  void kernel_round9(data_t* data)
 {
 	__shared__ uint		s_bincount[256];//256 counters, each index is the value, count is the current index
 	__shared__ uint2	s_slot1[608];//first 16 bytes
@@ -1215,9 +1219,9 @@ void kernel_round9(data_t* data)
 	uint count;
 	uint laneid = get_lane_id();
 
-	//if (tid < 256) {
+	if (tid < 256) {
 		s_bincount[tid&255] = 0;//reset bin count
-	//}
+	}
 
 	if (tid == 0)
 	{
@@ -1236,7 +1240,7 @@ void kernel_round9(data_t* data)
 
 	count = __shfl_sync(0xFFFFFFFF, count, 0);
 
-	if (tid > 607) { return; }
+	//if (tid > 607) { return; }
 
 	for (; tid < 608; tid += blockDim.x) {
 		uint bin_idx = 0;
@@ -2013,7 +2017,7 @@ int main()
 	g_ctx.init();
 
 	//Step 1 - Generate nouces
-	generate_nounces(10000);
+	generate_nounces(1000);
 
 	std::atomic<int> amdone(0);
 
