@@ -1298,6 +1298,7 @@ void kernel_candidates(data_t* data)
 	__shared__ uint s_is_col;
 	__shared__ uint s_sol_num;
 	__shared__ uint s_cnt;
+	__shared__ uint s_encoded_row;
 
 	uint tid = threadIdx.x;
 	uint idx = blockIdx.x;
@@ -1305,20 +1306,25 @@ void kernel_candidates(data_t* data)
 	uint cnt;
 	uint encoded_row;
 
-	if (!tid)
+	if (tid == 0)
 	{
 		s_is_col = 0;
-		s_cnt = data->candidates.sol_nr[2];//r83;
+		uint tmpCnt = data->candidates.sol_nr[2];//r83;
+		if (tmpCnt < idx)
+		{
+			s_encoded_row = data->sols[idx];
+		}
+		s_cnt = tmpCnt;
 	}
 
 	__syncthreads();
 
 	if (laneid == 0)
-	{
+	{//4 warp means 4 reads
 		cnt = s_cnt;
 		if (idx < cnt)
 		{
-			encoded_row = data->sols[idx];
+			encoded_row = s_encoded_row;
 		}
 	}
 
@@ -1328,6 +1334,7 @@ void kernel_candidates(data_t* data)
 
 	if (idx >= cnt) 
 	{
+		//all threads die here
 		return;
 	}
 
@@ -1425,7 +1432,11 @@ void kernel_candidates(data_t* data)
 
 	__syncthreads();
 
-	if (s_is_col != 0) { return; }
+	if (s_is_col != 0)
+	{ 
+		//all threads can die here
+		return; 
+	}
 
 	const uint tid_idx = tid * 4;
 	uint cand1 = s_candidate[tid_idx + 1];
@@ -1625,18 +1636,22 @@ void kernel_candidates(data_t* data)
 
 	if (tid == 0) 
 	{
-		uint solc = atomicAdd(&data->candidates.sol_nr[0], 1);
-		s_sol_num = solc;
+		s_sol_num = atomicAdd(&data->candidates.sol_nr[0], 1);
 	}
 
 	__syncthreads();
 
+	if (laneid == 0)
+	{
+
+	}
+
 	uint solc = s_sol_num;
-	if (solc < 16) {
-		int r76 = tid_idx + 3;
+	if (solc < 16)
+	{
 		uint* p_cand = &data->candidates.vals[solc][tid_idx];
 		uint* p_s_cand = &s_candidate[tid_idx];
-		for (int r275 = (int)tid_idx - 1; r275 < r76; r275++, p_cand++, p_s_cand++)
+		for (int i = 0; i < 4; i++, p_cand++, p_s_cand++)
 		{
 			*p_cand = *p_s_cand;
 		}
