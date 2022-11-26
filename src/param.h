@@ -63,6 +63,6 @@ typedef struct	sols_s
 
 typedef struct candidate_s
 {
-	unsigned int sol_nr[3];
+	unsigned int sol_nr[4];
 	unsigned int vals[16][512];
 } candidate_t;

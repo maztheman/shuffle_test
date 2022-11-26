@@ -1649,12 +1649,9 @@ void kernel_candidates(data_t* data)
 	uint solc = s_sol_num;
 	if (solc < 16)
 	{
-		uint* p_cand = &data->candidates.vals[solc][tid_idx];
-		uint* p_s_cand = &s_candidate[tid_idx];
-		for (int i = 0; i < 4; i++, p_cand++, p_s_cand++)
-		{
-			*p_cand = *p_s_cand;
-		}
+		uint4* p_cand = (uint4*) &data->candidates.vals[solc][tid_idx];
+		uint4* p_s_cand = (uint4*)&s_candidate[tid_idx];
+		*p_cand = *p_s_cand;
 	}
 
 }
