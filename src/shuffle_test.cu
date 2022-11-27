@@ -790,13 +790,17 @@ void kernel_round3(data_t* data)
 
 
 __global__
-__launch_bounds__(608)
+__launch_bounds__(NR_SLOTS)
 void kernel_round4(data_t* data)
 {
-	__shared__ uint16_t s_collisions[256 * 12];
-	__shared__ uint4 s_w0[608];
+    const uint BIN_CNT = 256;
+    const uint MAX_COLL = 20;
+    const uint MAX_COLL_IDX = MAX_COLL - 1;
+
+	__shared__ uint16_t s_collisions[BIN_CNT * MAX_COLL];
+	__shared__ uint4 s_w0[NR_SLOTS];
 	__shared__ uint s_count;
-	__shared__ uint s_cnt[256];
+	__shared__ uint s_cnt[BIN_CNT];
 
 	//uint* s_cnt = &data->bin_counter[blockIdx.x * 256];
 
@@ -805,13 +809,14 @@ void kernel_round4(data_t* data)
 	uint tid = threadIdx.x;
 	uint laneid = get_lane_id();
 
-	//if (tid < 256) {
-		s_cnt[tid&255] = 0;
-	//}
+    if (tid < BIN_CNT)
+    {
+		s_cnt[tid] = 0;
+	}
 
 	if (tid == 0)
 	{
-		s_count = min(data->rowCounter1[idx], 608);
+		s_count = min(data->rowCounter1[idx], NR_SLOTS);
 		data->rowCounter1[idx] = 0;
 	}
 
@@ -826,9 +831,7 @@ void kernel_round4(data_t* data)
 
 	count = __shfl_sync(0xFFFFFFFF, count, 0);
 
-	if (tid > 607) { return; }
-
-	for (; tid < 608; tid += blockDim.x) {
+	for (; tid < NR_SLOTS; tid += blockDim.x) {
 		uint4 slot_0;
 		uint bin = 0;
 		uint bin_idx = 0;
@@ -838,14 +841,14 @@ void kernel_round4(data_t* data)
 			s_w0[tid] = slot_0;
 			bin = slot_0.x >> 24;
 			uint cnt = atomicAdd(&s_cnt[bin], 1);
-			bin_idx = min(cnt, 11);
-			s_collisions[bin * 12 + bin_idx] = tid;
+			bin_idx = min(cnt, MAX_COLL_IDX);
+			s_collisions[bin * MAX_COLL + bin_idx] = tid;
 		}
 
 		__syncthreads();
 
 		if (bin_idx >= 1) {
-			uint col_idx = bin * 12;
+			uint col_idx = bin * MAX_COLL;
 			for (uint n = 0; n < bin_idx; n++, col_idx++) {
 				uint16_t col = s_collisions[col_idx];
 				uint4 o_slot_0 = s_w0[col];
@@ -854,7 +857,7 @@ void kernel_round4(data_t* data)
 					uint r52;
 					asm volatile("bfe.u32 %0, %1, 12, 12;" : "=r"(r52) : "r"(r28));
 					uint row_count = atomicAdd(&data->rowCounter0[r52], 1);
-					if (row_count < 608) {
+					if (row_count < NR_SLOTS) {
 						slot32_t to_slot;
 						to_slot.x.w = o_slot_0.w ^ slot_0.w;
 						to_slot.x.y = o_slot_0.y ^ slot_0.y;
@@ -875,13 +878,17 @@ void kernel_round4(data_t* data)
 }
 
 __global__
-__launch_bounds__(608)
+__launch_bounds__(NR_SLOTS)
 void kernel_round5(data_t* data)
 {
-	__shared__ uint16_t s_collisions[3072];
-	__shared__ uint4 s_w0[608];
+    const uint BIN_CNT = 256;
+    const uint MAX_COLL = 20;
+    const uint MAX_COLL_IDX = MAX_COLL - 1;
+
+	__shared__ uint16_t s_collisions[BIN_CNT * MAX_COLL];
+	__shared__ uint4 s_w0[NR_SLOTS];
 	__shared__ uint s_count;
-	__shared__ uint s_cnt[256];
+	__shared__ uint s_cnt[BIN_CNT];
 
 	//uint* s_cnt = &data->bin_counter[blockIdx.x * 256];
 
@@ -890,13 +897,14 @@ void kernel_round5(data_t* data)
 	uint tid = threadIdx.x;
 	uint laneid = get_lane_id();
 
-	//if (tid < 256) {
-		s_cnt[tid&255] = 0;
-	//}
+	if (tid < BIN_CNT)
+	{
+		s_cnt[tid] = 0;
+	}
 
 	if (tid == 0)
 	{
-		s_count = min(data->rowCounter0[idx], 608);
+		s_count = min(data->rowCounter0[idx], NR_SLOTS);
 		data->rowCounter0[idx] = 0;
 	}
 
@@ -911,9 +919,7 @@ void kernel_round5(data_t* data)
 
 	__shfl_sync(0xFFFFFFFF, count, 0);
 
-	if (tid > 607) { return; }
-
-	for (; tid < 608; tid += blockDim.x) {
+	for (; tid < NR_SLOTS; tid += blockDim.x) {
 		uint4 slot_0;
 		uint bin = 0;
 		uint bin_idx = 0;
@@ -923,14 +929,14 @@ void kernel_round5(data_t* data)
 			s_w0[tid] = slot_0;
 			bin = slot_0.x >> 4;
 			uint cnt = atomicAdd(&s_cnt[bin], 1);
-			bin_idx = min(cnt, 11);
-			s_collisions[bin * 12 + bin_idx] = tid;
+			bin_idx = min(cnt, MAX_COLL_IDX);
+			s_collisions[bin * MAX_COLL + bin_idx] = tid;
 		}
 
 		__syncthreads();
 
 		if (bin_idx >= 1) {
-			uint col_idx = bin * 12;
+			uint col_idx = bin * MAX_COLL;
 			for (uint n = 0; n < bin_idx; n++, col_idx++) {
 				uint16_t col = s_collisions[col_idx];
 				uint4 o_slot_0 = s_w0[col];
@@ -940,7 +946,7 @@ void kernel_round5(data_t* data)
 					uint dst_row;
 					asm volatile("prmt.b32 %0, %1, %2, 13063;" : "=r"(dst_row) : "r"(r53), "r"(r28));
 					uint row_count = atomicAdd(&data->rowCounter1[dst_row], 1);
-					if (row_count < 608) {
+					if (row_count < NR_SLOTS) {
 						uint4 out_slot;
 						out_slot.z = o_slot_0.w ^ slot_0.w;
 						out_slot.y = o_slot_0.z ^ slot_0.z;
