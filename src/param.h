@@ -10,7 +10,7 @@ static constexpr auto APX_NR_ELMS_LOG 	= PREFIX + 1;
 static constexpr auto NR_ROWS_LOG 		= 12;
 
 static constexpr auto NR_ROWS 			= 1 << NR_ROWS_LOG;
-static constexpr auto NR_SLOTS 			= 608;
+static constexpr auto NR_SLOTS 			= 768;
 
 // Length of 1 element (slot) in bytes
 static constexpr auto SLOT_LEN          = 32;
