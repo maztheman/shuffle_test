@@ -76,6 +76,9 @@
         "span": "cpp",
         "typeindex": "cpp",
         "valarray": "cpp",
-        "*.ipp": "cpp"
+        "*.ipp": "cpp",
+        "__nullptr": "cpp",
+        "any": "cpp",
+        "coroutine": "cpp"
     }
 }

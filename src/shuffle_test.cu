@@ -551,8 +551,8 @@ __global__
 __launch_bounds__(NR_SLOTS)
 void kernel_round1(data_t* data)
 {
-    const uint BIN_CNT = 512;
-    const uint MAX_COLL = 10;
+    const uint BIN_CNT = 256;
+    const uint MAX_COLL = 12;
     const uint MAX_COLL_IDX = MAX_COLL - 1;
     const uint COLL_SIZE = BIN_CNT * MAX_COLL;
 	__shared__ uint16_t s_collisions[COLL_SIZE];
@@ -597,7 +597,7 @@ void kernel_round1(data_t* data)
 			slot_1 = *(uint2*)&data->round0.rows[idx].slots[tid].y;
 			s_w0[tid] = slot_0;
 			s_w1[tid] = slot_1;
-			bin = slot_0.x >> 20;
+			bin = (slot_0.x >> 20) & 255;
 			uint cnt = atomicAdd(&s_cnt[bin], 1);
 			bin_idx = min(MAX_COLL_IDX, cnt);
 			s_collisions[bin * MAX_COLL + bin_idx] = tid;
@@ -645,8 +645,8 @@ __global__
 __launch_bounds__(NR_SLOTS)
 void kernel_round2(data_t* data)
 {
-    const uint BIN_CNT = 512;
-    const uint MAX_COLL = 10;
+    const uint BIN_CNT = 256;
+    const uint MAX_COLL = 12;
     const uint MAX_COLL_IDX = MAX_COLL - 1;
     
 	__shared__ uint16_t s_collisions[BIN_CNT * MAX_COLL];
@@ -689,7 +689,7 @@ void kernel_round2(data_t* data)
 
 		if (tid < count) {
 			slot_0 = data->round1.rows[idx].slots[tid].x;
-			bin = slot_0.x;
+			bin = slot_0.x & 255;
 			slot_1 = *(uint2*)&data->round1.rows[idx].slots[tid].y.x;
 			s_w0[tid] = slot_0;
 			s_w1[tid] = slot_1;
@@ -736,8 +736,8 @@ __global__
 __launch_bounds__(NR_SLOTS)
 void kernel_round3(data_t* data)
 {
-    const uint BIN_CNT = 512;
-    const uint MAX_COLL = 10;
+    const uint BIN_CNT = 256;
+    const uint MAX_COLL = 12;
     const uint MAX_COLL_IDX = MAX_COLL - 1;
 
 	__shared__ uint16_t s_collisions[BIN_CNT * MAX_COLL];
@@ -787,7 +787,7 @@ void kernel_round3(data_t* data)
 			slot_1 = *(uint*)&data->round2.rows[idx].slots[tid].y;
 			s_w0[tid] = slot_0;
 			s_w1[tid] = slot_1;
-			bin = slot_0.x >> 12;
+			bin = (slot_0.x >> 12)&255;
 			uint cnt = atomicAdd(&s_cnt[bin], 1);
 			bin_idx = min(cnt, MAX_COLL_IDX);
 			s_collisions[bin * MAX_COLL + bin_idx] = tid;
@@ -918,8 +918,8 @@ __global__
 __launch_bounds__(NR_SLOTS)
 void kernel_round5(data_t* data)
 {
-    const uint BIN_CNT = 128;
-    const uint MAX_COLL = 32;
+    const uint BIN_CNT = 256;
+    const uint MAX_COLL = 12;
     const uint MAX_COLL_IDX = MAX_COLL - 1;
 
 	__shared__ uint16_t s_collisions[BIN_CNT * MAX_COLL];
@@ -964,7 +964,7 @@ void kernel_round5(data_t* data)
 		if (tid < count) {
 			slot_0 = data->round4.rows[idx].slots[tid].x;
 			s_w0[tid] = slot_0;
-			bin = slot_0.x >> 5;
+			bin = slot_0.x >> 4;
 			uint cnt = atomicAdd(&s_cnt[bin], 1);
 			bin_idx = min(cnt, MAX_COLL_IDX);
 			s_collisions[bin * MAX_COLL + bin_idx] = tid;
@@ -1004,8 +1004,8 @@ __global__
 __launch_bounds__(NR_SLOTS)
 void kernel_round6(data_t* data)
 {
-    const uint BIN_CNT = 128;
-    const uint MAX_COLL = 32;
+    const uint BIN_CNT = 256;
+    const uint MAX_COLL = 12;
     const uint MAX_COLL_IDX = MAX_COLL - 1;
 
 	__shared__ uint16_t s_collisions[BIN_CNT * MAX_COLL];
@@ -1048,7 +1048,7 @@ void kernel_round6(data_t* data)
 		if (tid < count) {
 			slot_0 = data->round5.rows[idx].slots[tid];
 			s_w0[tid] = slot_0;
-			bin = slot_0.x >> 17;
+			bin = slot_0.x >> 16;
 			uint cnt = atomicAdd(&s_cnt[bin], 1);
 			bin_idx = min(cnt, MAX_COLL_IDX);
 			s_collisions[bin * MAX_COLL + bin_idx] = tid;
@@ -1095,8 +1095,8 @@ void kernel_round7(data_t* data)
 {
 	//512,256 - 1200 sols/s
 	//128 - 2000 sols/s (must be not correct)
-    const uint BIN_CNT = 512;
-    const uint MAX_COLL = 32;
+    const uint BIN_CNT = 256;
+    const uint MAX_COLL = 12;
     const uint MAX_COLL_IDX = MAX_COLL - 1;
 
 	__shared__ uint16_t s_collisions[BIN_CNT * MAX_COLL];
@@ -1141,7 +1141,7 @@ void kernel_round7(data_t* data)
 		if (tid < count) {
 			slot_0 = data->round6.rows[idx].slots[tid];
 			s_w0[tid] = slot_0;
-			bin = slot_0.x;
+			bin = slot_0.x&255;
 			uint cnt = atomicAdd(&s_cnt[bin], 1);
 			bin_idx = min(cnt, MAX_COLL_IDX);
 			s_collisions[bin * MAX_COLL + bin_idx] = tid;
