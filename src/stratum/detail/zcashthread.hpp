@@ -137,7 +137,7 @@ void static ZcashMinerThread(ZcashMiner<CPUSolver, CUDASolver, OPENCLSolver>* mi
 					uint256 headerhash = actualHeader.GetHash();
 					if (UintToArith256(headerhash) > actualTarget) {
 						BOOST_LOG_CUSTOM(debug, pos) << "Too large: " << headerhash.ToString();
-						return;
+//						return;
 					}
 
 					// Found a solution

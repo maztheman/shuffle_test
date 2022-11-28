@@ -3,6 +3,20 @@
 #include "mtm_solver.h"
 #include "api.h"
 
+#include <boost/log/core/core.hpp>
+#include <boost/log/core.hpp>
+#include <boost/log/trivial.hpp>
+#include <boost/log/expressions.hpp>
+#include <boost/log/utility/setup/console.hpp>
+#include <boost/log/attributes.hpp>
+#include <boost/log/support/date_time.hpp>
+#include <boost/date_time/posix_time/posix_time_types.hpp>
+
+namespace logging = boost::log;
+namespace sinks = boost::log::sinks;
+namespace src = boost::log::sources;
+
+
 using MyMiner = stratum::ZcashMiner<stratum::NopSolver, cuda_mtm_solver, stratum::NopSolver>;
 using MyStratumClient = stratum::StratumClient<MyMiner, stratum::ZcashJob, stratum::EquihashSolution>;
 
@@ -89,11 +103,26 @@ int main()
 
     cuda_enabled[0] = 1;
     cuda_enabled[1] = 1;
+    int log_level = 2;
+boost::log::add_console_log(
+        std::clog,
+                boost::log::keywords::auto_flush = true,
+                        boost::log::keywords::filter = boost::log::trivial::severity >= log_level,
+                                boost::log::keywords::format = (
+                                        boost::log::expressions::stream
+                                                    << "[" << boost::log::expressions::format_date_time<boost::posix_time::ptime>("TimeStamp", "%H:%M:%S")
+                                                                << "][" << boost::log::expressions::attr<boost::log::attributes::current_thread_id::value_type>("ThreadID")
+                                                   << "] "  << boost::log::expressions::smessage
+                                                                                    )
+                                                                                        );
+
 
     MyMiner::doBenchmark(num_hashes, 24, cuda_device_count, cuda_enabled, cuda_blocks, cuda_tpb, 0, 0, nullptr, nullptr);
 
 
     start_mining<MyMiner>(8080, 24, cuda_device_count, 0, 0, "zec.f2pool.com", "3357", "maztheman.one", "", scSig);
+
+
 
 
 }
