@@ -477,7 +477,7 @@ void kernel_round0(data_t* data, const uint4 *  bla)
 		//aaaa aaaa bbbb bbbb cccc cccc dddd dddd | eeee eeee ffff ffff gggg gggg hhhh hhhh
 		//output
 		//0000 bbbb aaaa aaaa eeee eeee ffff ffff
-
+		//x is 28 bits
 		slot.x.x = __byte_perm(v32[6], v32[7], 0x2345) & 0xFFFFFFF;
 		slot.x.y = __byte_perm(v32[7], v32[8], 0x2345);
 		slot.x.z = __byte_perm(v32[8], v32[9], 0x2345);
@@ -542,7 +542,9 @@ void kernel_round1(data_t* data)
 			slot_1 = *(uint2*)&data->round0.rows[idx].slots[tid].y;
 			s_w0[tid] = slot_0;
 			s_w1[tid] = slot_1;
-			bin = (slot_0.x >> 20) & 255;
+			//x is 28 bits
+			//bin is upper 8 bits
+			bin = slot_0.x >> 20;
 			uint cnt = atomicAdd(&s_cnt[bin], 1);
 			bin_idx = min(MAX_COLL_IDX, cnt);
 			s_collisions[bin * MAX_COLL + bin_idx] = tid;
@@ -557,18 +559,21 @@ void kernel_round1(data_t* data)
 				uint2 o_slot_1 = s_w1[col];
 				if (slot_1.y != o_slot_1.y) {
 					uint4 o_slot_0 = s_w0[col];
+					//x will be (20 bits)
+					//0000 0000 0000 AAAA bbbb BBBB cccc CCCC
 					uint r36 = o_slot_0.x ^ slot_0.x;
 					uint r66;
-					asm volatile("prmt.b32 %0, %1, 0, 17185;" : "=r"(r66) : "r"(r36));
+					asm volatile("bfe.u32 %0, %1, 8, 12;" : "=r"(r66) : "r"(r36));
+					//asm volatile("prmt.b32 %0, %1, 0, 17185;" : "=r"(r66) : "r"(r36));
 					uint r67 = r66 & 4095;
 					uint row_count = atomicAdd(&data->rowCounter1[r67], 1);
 					if (row_count < NR_SLOTS) {
 						slot32_t to_slot;
-						
+						//x is 8 bits
+						to_slot.x.x = r36 & 255;
 						to_slot.x.y = o_slot_0.y ^ slot_0.y;
 						to_slot.x.z = o_slot_0.z ^ slot_0.z;
 						to_slot.x.w = o_slot_0.w ^ slot_0.w;
-						to_slot.x.x = r36 & 511;
 						data->round1.rows[r67].slots[row_count].x = to_slot.x;
 						to_slot.y.y = o_slot_1.y ^ slot_1.y;
 						to_slot.y.x = o_slot_1.x ^ slot_1.x;
@@ -634,7 +639,9 @@ void kernel_round2(data_t* data)
 
 		if (tid < count) {
 			slot_0 = data->round1.rows[idx].slots[tid].x;
-			bin = slot_0.x & 255;
+			//x is 8 bits
+			//bin is x
+			bin = slot_0.x;
 			slot_1 = *(uint2*)&data->round1.rows[idx].slots[tid].y.x;
 			s_w0[tid] = slot_0;
 			s_w1[tid] = slot_1;
@@ -657,10 +664,11 @@ void kernel_round2(data_t* data)
 					uint row_count = atomicAdd(&data->rowCounter0[r61], 1);
 					if (row_count < NR_SLOTS) {
 						slot32_t to_slot;
-						to_slot.x.w = o_slot_1.x ^ slot_1.x;
+						//x is 20 bits
+						to_slot.x.x = r33 & 0xFFFFFU;
 						to_slot.x.y = o_slot_0.z ^ slot_0.z;
 						to_slot.x.z = o_slot_0.w ^ slot_0.w;
-						to_slot.x.x = r33 & 2097151;
+						to_slot.x.w = o_slot_1.x ^ slot_1.x;
 						data->round2.rows[r61].slots[row_count].x = to_slot.x;
 						to_slot.y.x = o_slot_1.y ^ slot_1.y;
 						uint r69 = idx << 10;
@@ -691,9 +699,7 @@ void kernel_round3(data_t* data)
 	__shared__ uint s_count;
 	__shared__ uint s_cnt[BIN_CNT];
 
-	//uint* s_cnt = &data->bin_counter[blockIdx.x * 256];
-
-
+	
 	uint idx = blockIdx.x;
 	uint count;
 	uint tid = threadIdx.x;
@@ -716,8 +722,6 @@ void kernel_round3(data_t* data)
 		count = s_count;
 	}
 
-	__syncthreads();
-
 	count = __shfl_sync(0xFFFFFFFF, count, 0);
 
 	for (; tid < NR_SLOTS; tid += blockDim.x) {
@@ -732,7 +736,9 @@ void kernel_round3(data_t* data)
 			slot_1 = *(uint*)&data->round2.rows[idx].slots[tid].y;
 			s_w0[tid] = slot_0;
 			s_w1[tid] = slot_1;
-			bin = (slot_0.x >> 12)&255;
+			//x is 20 bits
+			//bin is upper 8
+			bin = slot_0.x >> 12;
 			uint cnt = atomicAdd(&s_cnt[bin], 1);
 			bin_idx = min(cnt, MAX_COLL_IDX);
 			s_collisions[bin * MAX_COLL + bin_idx] = tid;
@@ -747,15 +753,18 @@ void kernel_round3(data_t* data)
 				uint o_slot_1 = s_w1[col];
 				if (slot_1 != o_slot_1) {
 					uint4 o_slot_0 = s_w0[col];
+					//x will be
+					//0000 0000 0000 0000 0000 AAAA bbbb BBBB
 					uint r54 = o_slot_0.x ^ slot_0.x;
 					uint r55 = r54 & 4095;
 					uint row_count = atomicAdd(&data->rowCounter1[r55], 1);
 					if (row_count < NR_SLOTS) {
 						slot32_t to_slot;
-						to_slot.x.w = o_slot_1 ^ slot_1;
+						//x is 32 bits
 						to_slot.x.x = o_slot_0.y ^ slot_0.y;
 						to_slot.x.y = o_slot_0.z ^ slot_0.z;
 						to_slot.x.z = o_slot_0.w ^ slot_0.w;
+						to_slot.x.w = o_slot_1 ^ slot_1;
 						data->round3.rows[r55].slots[row_count].x = to_slot.x;
 						uint r62 = idx << 10;
 						uint r63 = col | r62;
@@ -821,6 +830,8 @@ void kernel_round4(data_t* data)
 		if (tid < count) {
 			slot_0 = data->round3.rows[idx].slots[tid].x;
 			s_w0[tid] = slot_0;
+			//x is 32 bits
+			//bin is upper 8 bits
 			bin = slot_0.x >> 24;
 			uint cnt = atomicAdd(&s_cnt[bin], 1);
 			bin_idx = min(cnt, MAX_COLL_IDX);
@@ -834,17 +845,22 @@ void kernel_round4(data_t* data)
 			for (uint n = 0; n < bin_idx; n++, col_idx++) {
 				uint16_t col = s_collisions[col_idx];
 				uint4 o_slot_0 = s_w0[col];
-				if (o_slot_0.w != slot_0.w) {
+				if (o_slot_0.w != slot_0.w)
+				{
+					//x will be
+					//0000 0000 aaaa AAAA bbbb BBBB cccc CCCC
 					uint r28 = o_slot_0.x ^ slot_0.x;
 					uint r52;
+					//row is upper 12 bits
 					asm volatile("bfe.u32 %0, %1, 12, 12;" : "=r"(r52) : "r"(r28));
 					uint row_count = atomicAdd(&data->rowCounter0[r52], 1);
 					if (row_count < NR_SLOTS) {
 						slot32_t to_slot;
-						to_slot.x.w = o_slot_0.w ^ slot_0.w;
+						//x is 12 bits
+						to_slot.x.x = r28 & 0xFFFU;
 						to_slot.x.y = o_slot_0.y ^ slot_0.y;
 						to_slot.x.z = o_slot_0.z ^ slot_0.z;
-						to_slot.x.x = r28 & 4095;
+						to_slot.x.w = o_slot_0.w ^ slot_0.w;
 						data->round4.rows[r52].slots[row_count].x = to_slot.x;
 						uint r59 = idx << 10;
 						uint r60 = col | r59;
@@ -909,6 +925,8 @@ void kernel_round5(data_t* data)
 		if (tid < count) {
 			slot_0 = data->round4.rows[idx].slots[tid].x;
 			s_w0[tid] = slot_0;
+			//x is 12 bits
+			//bin is upper 8 bits
 			bin = slot_0.x >> 4;
 			uint cnt = atomicAdd(&s_cnt[bin], 1);
 			bin_idx = min(cnt, MAX_COLL_IDX);
@@ -922,21 +940,25 @@ void kernel_round5(data_t* data)
 			for (uint n = 0; n < bin_idx; n++, col_idx++) {
 				uint16_t col = s_collisions[col_idx];
 				uint4 o_slot_0 = s_w0[col];
-				if (slot_0.w != o_slot_0.w) {
-					uint r28 = o_slot_0.y ^ slot_0.y;
+				if (slot_0.w != o_slot_0.w) 
+				{
+					//x will be 
+					//0000 0000 0000 0000 0000 0000 0000 aaaa
 					uint r53 = (o_slot_0.x ^ slot_0.x) & 15;
-					uint dst_row;
-					asm volatile("prmt.b32 %0, %1, %2, 13063;" : "=r"(dst_row) : "r"(r53), "r"(r28));
+					uint r28 = o_slot_0.y ^ slot_0.y;
+					//borrow a byte from y
+					uint dst_row = __byte_perm(r53, r28, 0x3307);
 					uint row_count = atomicAdd(&data->rowCounter1[dst_row], 1);
 					if (row_count < NR_SLOTS) {
 						uint4 out_slot;
-						out_slot.z = o_slot_0.w ^ slot_0.w;
+						//x is 24 bits
+						out_slot.x = r28 & 0xFFFFFFU;
 						out_slot.y = o_slot_0.z ^ slot_0.z;
+						out_slot.z = o_slot_0.w ^ slot_0.w;
 						uint r60 = idx << 10;
 						uint r61 = col | r60;
 						uint r62 = r61 << 10;
 						out_slot.w = r62 | tid;
-						out_slot.x = r28 & 16777215;
 						data->round5.rows[dst_row].slots[row_count] = out_slot;
 					}
 				}
@@ -993,6 +1015,8 @@ void kernel_round6(data_t* data)
 		if (tid < count) {
 			slot_0 = data->round5.rows[idx].slots[tid];
 			s_w0[tid] = slot_0;
+			//x is 24 bits
+			//bin is upper 8 bits
 			bin = slot_0.x >> 16;
 			uint cnt = atomicAdd(&s_cnt[bin], 1);
 			bin_idx = min(cnt, MAX_COLL_IDX);
@@ -1008,24 +1032,30 @@ void kernel_round6(data_t* data)
 				uint16_t col = s_collisions[col_idx];
 				uint4 o_slot_0 = s_w0[col];
 				if (slot_0.z != o_slot_0.z) {
+					//x will be:
+					//0000 0000 0000 0000 aaaa AAAA bbbb BBBB
 					uint r25 = o_slot_0.x ^ slot_0.x;
 					uint r50;
+					//row is upper 12 bits leaving a nibble
 					asm volatile("bfe.u32 %0, %1, 4, 12;" : "=r"(r50) : "r"(r25));
 					uint row_count = atomicAdd(&data->rowCounter0[r50], 1);
 
 					if (row_count < NR_SLOTS) {
 						uint4 to_slot;
-						uint r52 = r25 & 31;
+						uint r52 = r25 & 0xFU;
 						uint r53 = r52 << 4;
 						uint r54 = o_slot_0.y ^ slot_0.y;
 						uint r55 = r54 >> 28;
+						//x is 8 bits, borrwed 4 bits from y
+						to_slot.x = r53 | r55;
+						//y is 28 bits
+						to_slot.y = r54 & 0xFFFFFFFU;
 						to_slot.z = o_slot_0.z  ^ slot_0.z;
 						uint r58 = idx << 10;
 						uint r59 = col | r58;
 						uint r60 = r59 << 10;
 						to_slot.w = r60 | tid;
-						to_slot.x = r53 | r55;
-						to_slot.y = r54 & 268435455;
+						
 						data->round6.rows[r50].slots[row_count] = to_slot;
 					}
 				}
@@ -1086,6 +1116,8 @@ void kernel_round7(data_t* data)
 		if (tid < count) {
 			slot_0 = data->round6.rows[idx].slots[tid];
 			s_w0[tid] = slot_0;
+			//x is 9 bits
+			//bin is lower 8 bits
 			bin = slot_0.x&255;
 			uint cnt = atomicAdd(&s_cnt[bin], 1);
 			bin_idx = min(cnt, MAX_COLL_IDX);
@@ -1100,17 +1132,19 @@ void kernel_round7(data_t* data)
 				uint16_t col = *col_ptr;
 				uint4 o_slot_0 = s_w0[col];
 				if (slot_0.z != o_slot_0.z) {
+					//y is 28 bits
 					uint r22 = o_slot_0.y ^ slot_0.y;
 					uint r47 = r22 >> 16;
+					//row uses upper 12 bits of 7
 					uint row_count = atomicAdd(&data->rowCounter1[r47], 1);
 					if (row_count < NR_SLOTS) {
 						uint4 to_slot;
+						to_slot.x = r22 & 0xFFFFU;
 						to_slot.y = o_slot_0.z ^ slot_0.z;
 						uint r51 = idx << 10;
 						uint r52 = col | r51;
 						uint r53 = r52 << 10;
 						to_slot.z = r53 | tid;
-						to_slot.x = r22 & 65535;
 						to_slot.w = 0;
 						data->round7.rows[r47].slots[row_count] = to_slot;
 					}
@@ -1174,6 +1208,10 @@ void kernel_round8(data_t* data)
 		if (tid < count) {
 			slot_0 = *(uint2*)&data->round7.rows[idx].slots[tid];
 			s_w0[tid] = slot_0;
+			//x is 16 bits
+			//0000 0000 0000 0000 aaaa AAAA bbbb BBBB
+			//bin is
+			//aaaa AAAA
 			bin = slot_0.x >> BIN_SHIFT;
 			uint cnt = atomicAdd(&s_cnt[bin], 1);
 			bin_idx = min(cnt, MAX_COLL_IDX);
@@ -1189,20 +1227,24 @@ void kernel_round8(data_t* data)
 				uint16_t col = *col_ptr;
 				uint2 o_slot_0 = s_w0[col];
 				if (slot_0.y != o_slot_0.y) {
+					//x is
+					//0000 0000 0000 0000 0000 0000 aaaa AAAA
 					uint r40 = o_slot_0.x ^ slot_0.x;
+					uint r20 = o_slot_0.y ^ slot_0.y;
 					uint r41 = r40 & 255;
 					uint r42 = r41 << 4;
-					uint r20 = o_slot_0.y ^ slot_0.y;
+					//borrow 4 bits from y to make a row
 					uint r43 = r20 >> 28;
 					uint r44 = r42 | r43;
+					
 					uint row_count = atomicAdd(&data->rowCounter0[r44], 1);
 					if (row_count < NR_SLOTS) {
 						uint2 to_slot;
+						to_slot.x = r20 & 268435455;
 						uint r47 = idx << 10;
 						uint r48 = col | r47;
 						uint r49 = r48 << 10;
 						to_slot.y = r49 | tid;
-						to_slot.x = r20 & 536870911;//268435455;
 						data->round8.rows[r44].slots[row_count] = to_slot;
 					}
 				}
@@ -1220,8 +1262,6 @@ __launch_bounds__(NR_SLOTS)
     const uint BIN_CNT = 256;
     const uint MAX_COLL = 32;
     const uint MAX_COLL_IDX = MAX_COLL - 1;
-	const uint BIN_SHIFT = 20;
-	const uint BIN_MASK = 255;
 
 
 	__shared__ uint		s_bincount[BIN_CNT];//256 counters, each index is the value, count is the current index
@@ -1264,7 +1304,11 @@ __launch_bounds__(NR_SLOTS)
 		if (tid < count) {
 			slot1 = data->round8.rows[idx].slots[tid];
 			s_slot1[tid] = slot1;
-			bin = (slot1.x >> BIN_SHIFT) & BIN_MASK;//top 8 bits of 0xFFFFFFF
+			//x is
+			//0000 AAAA bbbb BBBB cccc CCCC dddd DDDD
+			//so bin is
+			//AAAA bbbb
+			bin = slot1.x >> 20;
 			uint cnt = atomicAdd(&s_bincount[bin], 1);
 			bin_idx = min(cnt, MAX_COLL_IDX);//something like only 12 collisions please, 0-11 index
 			s_collisions[bin * MAX_COLL + bin_idx] = tid;//nr_collision_slots is 12, so i can know how many slots are same value because they are being stored in this way
@@ -1278,16 +1322,17 @@ __launch_bounds__(NR_SLOTS)
 			for (uint i = 0; i < bin_idx; i++, col_idx++) {
 				uint col = s_collisions[col_idx];
 				uint2 other_slot1 = s_slot1[col];
+				//by the time we are here x is:
+				//0000 0000 0000 BBBB cccc CCCC dddd DDDD
 				if (other_slot1.x == slot1.x) {
 					uint tmp = other_slot1.y ^ slot1.y;
 					bool rc = true;
-					if (tmp < 1048576) {//0x1000000
-						rc = ((tmp & 1047552) != 0) && ((tmp & 1023) != 0);
+					if (tmp < 0x100000U) {
+						rc = ((tmp & 0xFFC00U) != 0) && ((tmp & 0x3FFU) != 0);
 					}
-					bool rc2 = ((other_slot1.y ^ (slot1.y >> 10)) & 0x3FF) != 0;
-					bool rc3 = ((slot1.y ^ (other_slot1.y >> 10)) & 0x3FF) != 0;
-					bool rc4 = rc2 && rc3 && rc;
-					if (rc4) {
+					bool rc2 = rc && ((other_slot1.y ^ (slot1.y >> 10)) & 0x3FF) != 0;
+					bool rc3 = rc2 && ((slot1.y ^ (other_slot1.y >> 10)) & 0x3FF) != 0;
+					if (rc3) {
 						//increase sol match
 						uint cnt = atomicAdd(&data->candidates.sol_nr[2], 1);
 						if (cnt < 1024) {

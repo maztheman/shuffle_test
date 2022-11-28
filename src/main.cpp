@@ -121,7 +121,7 @@ boost::log::add_console_log(
     MyMiner::doBenchmark(num_hashes, 24, cuda_device_count, cuda_enabled, cuda_blocks, cuda_tpb, 0, 0, nullptr, nullptr);
 
 
-   // start_mining<MyMiner>(8080, 24, cuda_device_count, 0, 0, "zec.f2pool.com", "3357", "maztheman.one", "", scSig);
+    start_mining<MyMiner>(8080, 24, cuda_device_count, 0, 0, "zec.f2pool.com", "3357", "maztheman.one", "", scSig);
 
 
 
