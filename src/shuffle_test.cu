@@ -1,3 +1,4 @@
+#include "shuffle_test.h"
 #include "crypto/blake.hpp"
 #include "stratum/primitives/block.hpp"
 #include "stratum/streams.hpp"
@@ -6,7 +7,6 @@
 #include <cstdint>
 #include <ctime>
 #include <execution>
-#include <vector_types.h>
 
 using namespace crypto;
 
@@ -30,11 +30,16 @@ do {														\
 		}														\
 } while (0)
 
+static void internalSolve(mtm_context& ctx, const char* header, unsigned int header_len, const char* nonce, unsigned int nonce_len,
+	std::function<bool()> cancelf,
+	std::function<void(const std::vector<uint32_t>&, size_t, const unsigned char*)> solutionf,
+	std::function<void(void)> hashdonef);
 
 #define ENCODE_INPUTS(row, slot0, slot1) ((row << 20) | ((slot1 & 0x3ff) << 10) | (slot0 & 0x3ff))
 #define DECODE_ROW(REF)   (REF >> 20)
 #define DECODE_SLOT1(REF) ((REF >> 10) & 0x3ff)
 #define DECODE_SLOT0(REF) (REF & 0x3ff)
+
 
 typedef struct slot32_s
 {
@@ -92,6 +97,38 @@ typedef struct data_s
 	uint			sols[1024];
 	ulong			blake[16];
 } data_t;
+
+struct mtm_context
+{
+	mtm_context(int deviceNo)
+	: m_device_no(deviceNo)
+	{
+		checkCudaErrors(cudaDeviceSetCacheConfig(cudaFuncCachePreferShared));
+		init();
+	}
+
+	void init()
+	{
+		checkCudaErrors(cudaSetDevice(m_device_no));
+		checkCudaErrors(cudaDeviceReset());
+		checkCudaErrors(cudaMalloc((void**)&d_data, sizeof(data_t)));
+		checkCudaErrors(cudaMalloc((void**)&d_blake_data, 128));
+		checkCudaErrors(cudaMemset(d_data, 0, sizeof(data_t)));
+		checkCudaErrors(cudaMallocHost(&h_candidates, sizeof(candidate_t)));
+	}
+
+	void destroy()
+	{
+		checkCudaErrors(cudaSetDevice(m_device_no));
+		checkCudaErrors(cudaDeviceReset());
+		//checkCudaErrors(cudaFreeHost(h_candidates));
+	}
+
+	int				m_device_no;
+	data_t*			d_data;
+	uint4*			d_blake_data;
+	candidate_t*	h_candidates;
+};
 
 __device__ __forceinline__ void rotate32(ulong value, ulong* retval)
 {
@@ -1687,31 +1724,22 @@ void kernel_candidates(data_t* data)
 
 }
 
-struct context
+mtm_cuda_context::mtm_cuda_context(int tpb, int blocks, int id)
+: context(std::make_shared<mtm_context>(id))
 {
-	data_t*			d_data;
-	uint4*			d_blake_data;
-	candidate_t*	h_candidates;
 
-	void init()
-	{
-		checkCudaErrors(cudaSetDevice(0));
-		checkCudaErrors(cudaDeviceReset());
-		checkCudaErrors(cudaMalloc((void**)&d_data, sizeof(data_t)));
-		checkCudaErrors(cudaMalloc((void**)&d_blake_data, 128));
-		checkCudaErrors(cudaMemset(d_data, 0, sizeof(data_t)));
-		checkCudaErrors(cudaMallocHost(&h_candidates, sizeof(candidate_t)));
-	}
+}
 
-
-	void destroy()
-	{
-		checkCudaErrors(cudaSetDevice(0));
-		checkCudaErrors(cudaDeviceReset());
-		//checkCudaErrors(cudaFreeHost(h_candidates));
-	}
-};
-
+void mtm_cuda_context::solve(const char *tequihash_header,
+		unsigned int tequihash_header_len,
+		const char* nonce,
+		unsigned int nonce_len,
+		std::function<bool()> cancelf,
+		std::function<void(const std::vector<uint32_t>&, size_t, const unsigned char*)> solutionf,
+		std::function<void(void)> hashdonef)
+{
+	internalSolve(*context, tequihash_header, tequihash_header_len, nonce, nonce_len, cancelf, solutionf, hashdonef);
+}
 
 static constexpr auto COLLISION_BIT_LENGTH = (PARAM_N / (PARAM_K+1));
 //static constexpr auto COLLISION_BYTE_LENGTH = ((COLLISION_BIT_LENGTH+7)/8);
@@ -1783,7 +1811,7 @@ struct speed_test
 
 };
 
-speed_test speed(300);
+speed_test speed2(300);
 std::vector<uint> bin_counter(NR_ROWS * 512);
 std::vector<uint> row_counter(NR_ROWS);
 
@@ -1792,7 +1820,7 @@ std::vector<uint> row_counter(NR_ROWS);
 int bins[512] = { 0 };
 
 template<int END = 256>
-void PrintAverageBinCount(int round, context& ctx)
+void PrintAverageBinCount(int round, mtm_context& ctx)
 {
 	std::fill(&bin_counter[0], &bin_counter[END], 0);
 	checkCudaErrors(cudaMemcpy(&bin_counter[0], ctx.d_data->bin_counter, NR_ROWS * END * 4, cudaMemcpyDeviceToHost));
@@ -1817,7 +1845,7 @@ void PrintAverageBinCount(int round, context& ctx)
 	//printf("Round %d: Avg Bin Count: %d\n", round, avg);
 }
 
-void PrintAverageRowCount(int round, context& ctx)
+void PrintAverageRowCount(int round, mtm_context& ctx)
 {
 	std::fill(row_counter.begin(), row_counter.end(), 0);
 
@@ -1839,8 +1867,6 @@ void PrintAverageRowCount(int round, context& ctx)
 	int avg = cnt / NR_ROWS;
 
 	printf("Round %d: Avg Row Count: %d\n", round - 1, avg);
-
-
 }
 
 /*
@@ -1905,7 +1931,10 @@ static void solve_v1(context_v1& ctx, const char* header, unsigned int header_le
 }
 */
 
-static void solve(context& ctx, const char* header, unsigned int header_len, const char* nonce, unsigned int nonce_len)
+static void internalSolve(mtm_context& ctx, const char* header, unsigned int header_len, const char* nonce, unsigned int nonce_len,
+	std::function<bool()> cancelf,
+	std::function<void(const std::vector<uint32_t>&, size_t, const unsigned char*)> solutionf,
+	std::function<void(void)> hashdonef)
 {
 	uint64_t blake_data[16];
 	unsigned char mcontext[140];
@@ -1917,7 +1946,7 @@ static void solve(context& ctx, const char* header, unsigned int header_len, con
 	zcash_blake2b_init(&initialCtx, ZCASH_HASH_LEN, PARAM_N, PARAM_K);
 	zcash_blake2b_update(&initialCtx, (const uint8_t*)mcontext, 128, 0);
 
-	uint64_t blake_iv[] =
+	static uint64_t blake_iv[] =
 	{
 		0x6a09e667f3bcc908, 0xbb67ae8584caa73b,
 		0x3c6ef372fe94f82b, 0xa54ff53a5f1d36f1,
@@ -1933,36 +1962,28 @@ static void solve(context& ctx, const char* header, unsigned int header_len, con
 	
 	checkCudaErrors(cudaMemcpy(ctx.d_blake_data, blake_data, 128, cudaMemcpyHostToDevice));
 
-	//test<16><<<4096, 256>>>(ctx.d_data->blake);
-	
 	kernel_round0<<<NR_ROWS, 256>>>(ctx.d_data, ctx.d_blake_data);
-	//PrintAverageRowCount(1, ctx);
+	if (cancelf()) return;
 	kernel_round1<<<NR_ROWS, NR_SLOTS >>>(ctx.d_data);
-	//PrintAverageBinCount(1, ctx);
-	//PrintAverageRowCount(2, ctx);
+	if (cancelf()) return;
 	kernel_round2<<<NR_ROWS, NR_SLOTS >>>(ctx.d_data);
-	//PrintAverageBinCount(2, ctx);
-	//PrintAverageRowCount(3, ctx);
+	if (cancelf()) return;
 	kernel_round3<<<NR_ROWS, NR_SLOTS>>>(ctx.d_data);
-	//PrintAverageBinCount(3, ctx);
-	//PrintAverageRowCount(4, ctx);
+	if (cancelf()) return;
 	kernel_round4<<<NR_ROWS, NR_SLOTS>>>(ctx.d_data);
-	//PrintAverageBinCount(4, ctx);
-	//PrintAverageRowCount(5, ctx);
+	if (cancelf()) return;
 	kernel_round5<<<NR_ROWS, NR_SLOTS >>>(ctx.d_data);
-	//PrintAverageBinCount(5, ctx);
-	//PrintAverageRowCount(6, ctx);
+	if (cancelf()) return;
 	kernel_round6<<<NR_ROWS, NR_SLOTS >>>(ctx.d_data);
-	//PrintAverageBinCount(6, ctx);
-	//PrintAverageRowCount(7, ctx);
+	if (cancelf()) return;
 	kernel_round7<<<NR_ROWS, NR_SLOTS >>>(ctx.d_data);
-	//PrintAverageBinCount(7, ctx);
-	//PrintAverageRowCount(8, ctx);
+	if (cancelf()) return;
 	kernel_round8<<<NR_ROWS, NR_SLOTS >>>(ctx.d_data);
-	//PrintAverageBinCount(8, ctx);
-	//PrintAverageRowCount(9, ctx);
+	if (cancelf()) return;
 	kernel_round9<<<NR_ROWS, NR_SLOTS >>>(ctx.d_data);
+	if (cancelf()) return;
 	kernel_candidates<<<512, 128>>>(ctx.d_data);
+	if (cancelf()) return;
 
 	checkCudaErrors(cudaMemcpy(ctx.h_candidates, &ctx.d_data->candidates, sizeof(candidate_t), cudaMemcpyDeviceToHost));
 	
@@ -1973,19 +1994,16 @@ static void solve(context& ctx, const char* header, unsigned int header_len, con
 		verify_sol(ctx.h_candidates, sol_i, valid);
 	}
 
-	//printf("detected sols found %d\n", ctx.h_candidates->sol_nr[2]);
-
 	int sols_found = 0;
 	uint8_t proof[COMPRESSED_PROOFSIZE * 2];
 	for (uint32_t i = 0; i < ctx.h_candidates->sol_nr[0]; i++) {
 		if (valid[i]) {
 			compress(proof, (uint32_t *)(ctx.h_candidates->vals[i]));
-			speed.AddSolution();
+			solutionf(std::vector<uint32_t>(0), 1344, proof);
 			sols_found++;
 		}
 	}
-
-	//printf("valid sols found %d\n", sols_found);
+	hashdonef();
 }
 
 using stratum::primitives::CBlock;
@@ -2008,9 +2026,9 @@ static void generate_nounces(int hashes)
 	}
 }
 
-context g_ctx;
+mtm_context g_ctx(0);
 
-static bool benchmark_solve(context& ctx, const CBlock& block, const char* header, unsigned int header_len)
+static bool benchmark_solve(mtm_context& ctx, const CBlock& block, const char* header, unsigned int header_len)
 {
 	if (benchmark_nonces.empty()) {
 		return false;
@@ -2019,7 +2037,14 @@ static bool benchmark_solve(context& ctx, const CBlock& block, const char* heade
 	uint256* nonce = benchmark_nonces.front();
 	benchmark_nonces.erase(benchmark_nonces.begin());
 	
-	solve(ctx, header, header_len, (const char*)nonce->begin(), nonce->size());
+	internalSolve(ctx, header, header_len, (const char*)nonce->begin(), nonce->size(), 
+	[](){return false;}, 
+	[](const std::vector<uint32_t>&, size_t, const unsigned char*) {
+		speed2.AddSolution();
+	},
+	[](){
+
+	});
 	
 	std::fill(&bins[0], &bins[256], 0);
 
@@ -2054,9 +2079,11 @@ static int benchmark()
 
 #include <thread>
 #include <atomic>
+
+#if 0
 int main()
 {
-	checkCudaErrors(cudaDeviceSetCacheConfig(cudaFuncCachePreferShared));
+	
 
 	g_ctx.init();
 
@@ -2085,3 +2112,4 @@ int main()
 
 	return 0;
 }
+#endif
