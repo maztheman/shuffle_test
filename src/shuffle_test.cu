@@ -421,157 +421,74 @@ void kernel_round0(data_t* data, const uint4 *  bla)
 	v[5] = sv[5] ^ v[5] ^ v[13];
 	v[6] = (sv[6] ^ v[6] ^ v[14]) & 0xffff;
 
-	uint2 rowData[6];
-	uint row;
-	asm volatile(
-		"mov.b64 {%0, %1}, %3;\n"
-		"prmt.b32 %2, %0, 0, 17409;\n"
-		: "=r"(rowData[0].x), "=r"(rowData[0].y), "=r"(row)
-		: "l"(v[0]));
+	    uint row;
 
-	//0  0,1
-	//1  2,3
-	//2  4,5
-	//3  6.7
-		
-	asm volatile(
-		"mov.b64 {%0, %1}, %2;\n"
-		: "=r"(rowData[1].x), "=r"(rowData[1].y) //
-		: "l"(v[3])
-		);
+   //input li | hi
+   //aaaa aaaa bbbb bbbb cccc cccc dddd dddd | eeee eeee ffff ffff gggg gggg hhhh hhhh
+   //output
+   //eeee eeee eeee eeee dddd dddd cccc cccc
+   //row 
+   //0000 eeee eeee eeee eeee dddd dddd cccc
 
+	row = __byte_perm(v32[0], 0, 0x4401);
 	row >>= 4;
 
 	uint rowCnt = atomicAdd(rowCounter + row, 1);
 
 	if (rowCnt < NR_SLOTS) {
 		slot32_t slot;
-		slot.y.w = 0;
-		uint r1058;
-		asm volatile("prmt.b32 %0, %1, %2, 4660;" : "=r"(r1058) : "r"(rowData[0].x), "r"(rowData[0].y));//0,1
-		asm volatile(
-			"{\n\t"
-			".reg .b32 r1,r2,r3,r4;\n\t"
-			"mov.b64 {r1, r2}, %6;\n\t" //2,3
-			"mov.b64 {r3, r4}, %7;\n\t" //4,5
-			"prmt.b32 %0, r2, r3, 4660;\n\t"  //3,4
-			"prmt.b32 %1, %8, r1, 4660;\n\t"  //1,2
-			"and.b32 %2, %9, 536870911;\n\t"
-			"prmt.b32 %3, r1, r2, 4660;\n\t"  //2,3
-			"prmt.b32 %4, r4, %10, 4660;\n\t" //5,6
-			"prmt.b32 %5, r3, r4, 4660;\n\t"  //4,5
-			"}\n" : "=r"(slot.x.w), "=r"(slot.x.y), "=r"(slot.x.x), "=r"(slot.x.z), "=r"(slot.y.y), "=r"(slot.y.x)
-			: "l"(v[1]), "l"(v[2]), "r"(rowData[0].y), "r"(r1058), "r"(rowData[1].x)
-			);
-		data->round0.rows[row].slots[rowCnt].x = slot.x;
+		
+		//input lo | hi
+		//aaaa aaaa bbbb bbbb cccc cccc dddd dddd | eeee eeee ffff ffff gggg gggg hhhh hhhh
+		//output
+		//cccc cccc bbbb bbbb aaaa aaaa eeee eeee
+		//0000 cccc bbbb bbbb aaaa aaaa eeee eeee
+
+		slot.x.x = __byte_perm(v32[0], v32[1], 0x1234) & 0xFFFFFFF; 
+		slot.x.y = __byte_perm(v32[1], v32[2], 0x1234);
+		slot.x.z = __byte_perm(v32[2], v32[3], 0x1234);
+		slot.x.w = __byte_perm(v32[3], v32[4], 0x1234);
+		
+		slot.y.x = __byte_perm(v32[4], v32[5], 0x1234);
+		slot.y.y = __byte_perm(v32[5], v32[6], 0x1234);
 		slot.y.z = tid << 1;
+		slot.y.w = 0;
+
+		data->round0.rows[row].slots[rowCnt].x = slot.x;
 		data->round0.rows[row].slots[rowCnt].y = slot.y;
 	}
-	/*if (rowCnt < NR_SLOTS) {
-		slot32_t slot;
-		slot.y.w = 0;
 
-		asm volatile (
-			"{\n\t"
-			".reg .b32 tt;\n\t"
-			"mov.b64 {%0, %1}, %8;\n\t"
-			"mov.b64 {%2, %3}, %9;\n\t"
-			"prmt.b32 %4, %1, %2, 4660;\n\t"//0x1234
-			"prmt.b32 %5, %10, %0, 4660;\n\t"
-			"prmt.b32 %6, %0, %1, 4660;\n\t"
-			"prmt.b32 tt, %10, %11, 4660;\n\t"
-			"and.b32 %7, tt, 536870911;\n\t"
-			"}\n"
-			: "=r"(rowData[2].x), "=r"(rowData[2].y),
-			"=r"(rowData[3].x), "=r"(rowData[3].y),
-			"=r"(slot.x.w), "=r"(slot.x.y), "=r"(slot.x.z), "=r"(slot.x.x)
-			: "l"(v[1]), "l"(v[2]), "r"(rowData[0].y), "r"(rowData[0].x)
-			);
+	//input lo | hi
+	//aaaa aaaa bbbb bbbb cccc cccc dddd dddd | eeee eeee ffff ffff gggg gggg hhhh hhhh
+	//output
+	//eeee eeee eeee eeee cccc cccc bbbb bbbb
+	//row
+	//0000 0000 0000 0000 0000 cccc cccc bbbb
+	//we skip v32[6] dddd dddd because its used in previous thingy
 
-		uint4* slot1 = &data->round0.rows[row].slots[rowCnt].x;
-
-		asm volatile("st.global.v4.u32 [%4], {%0, %1, %2, %3};\n"
-			: : "r"(slot.x.x), "r"(slot.x.y), "r"(slot.x.z), "r"(slot.x.w), "l"(slot1)
-			);
-
-		asm volatile (
-			"prmt.b32 %0, %2, %3, 4660;\n"
-			"prmt.b32 %1, %4, %2, 4660;\n"
-			: "=r"(slot.y.x), "=r"(slot.y.y)
-			: "r"(rowData[3].y), "r"(rowData[1].x), "r"(rowData[3].x)
-			);
-
-		slot.y.z = tid * 2;
-
-		data->round0.rows[row].slots[rowCnt].y = slot.y;
-	}*/
-
-	asm volatile(
-		"prmt.b32 %0, %1, 0, 17426;\n"
-		: "=r"(row)
-		: "r"(rowData[1].x)
-		);
-
+	row = __byte_perm(v32[6], 0, 0x4412);
 	row >>= 4;
 
 	rowCnt = atomicAdd(rowCounter + row, 1);
 	if (rowCnt < NR_SLOTS) {
 		slot32_t slot;
-		slot.y.w = 0;
-		asm volatile(
-			"{\n\t"
-			".reg .b32 r1, r2, r3, r4, r5, r6, r7;\n\t"
-			"prmt.b32 r1, %6, %7, 9029;\n\t"
-			"mov.b64 {r2, r3}, %8;\n\t"
-			"mov.b64 {r4, r5}, %9;\n\t"
-			"prmt.b32 %0, r3, r4, 9029;\n\t"
-			"prmt.b32 %1, %7, r2, 9029;\n\t"
-			"and.b32 %2, r1, 536870911;\n\t"
-			"prmt.b32 %3, r2, r3, 9029;\n\t"
-			"mov.b64 {r6, r7}, %10;\n\t"
-			"prmt.b32 %4, r5, r6, 9029;\n\t"
-			"prmt.b32 %5, r4, r5, 9029;\n\t"
-			"}\n" : "=r"(slot.x.w), "=r"(slot.x.y), "=r"(slot.x.x), "=r"(slot.x.z), "=r"(slot.y.y), "=r"(slot.y.x)
-			: "r"(rowData[1].x), "r"(rowData[1].y), "l"(v[4]), "l"(v[5]), "l"(v[6])
-			);
 
-		data->round0.rows[row].slots[rowCnt].x = slot.x;
+		//input lo | hi
+		//aaaa aaaa bbbb bbbb cccc cccc dddd dddd | eeee eeee ffff ffff gggg gggg hhhh hhhh
+		//output
+		//0000 bbbb aaaa aaaa eeee eeee ffff ffff
+
+		slot.x.x = __byte_perm(v32[6], v32[7], 0x2345) & 0xFFFFFFF;
+		slot.x.y = __byte_perm(v32[7], v32[8], 0x2345);
+		slot.x.z = __byte_perm(v32[8], v32[9], 0x2345);
+		slot.x.w = __byte_perm(v32[9], v32[10], 0x2345);
+		
+		slot.y.x = __byte_perm(v32[10], v32[11], 0x2345);
+		slot.y.y = __byte_perm(v32[11], v32[12], 0x2345);
 		slot.y.z = (tid << 1) + 1;
-		data->round0.rows[row].slots[rowCnt].y = slot.y;
-		/*asm volatile(
-			"{\n\t"
-			".reg .b32 tt;\n\t"
-			"prmt.b32 tt, %8, %9, 9029;\n\t"
-			"mov.b64 {%0, %1}, %10;\n\t"
-			"mov.b64 {%2, %3}, %11;\n\t"
-			"prmt.b32 %4, %1, %2, 9029;\n\t"
-			"prmt.b32 %5, %9, %0, 9029;\n\t"
-			"prmt.b32 %6, %0, %1, 9029;\n\t"
-			"and.b32 %7, tt, 268435455;\n\t"
-			"}\n"
-			: "=r"(rowData[4].x), "=r"(rowData[4].y),
-			"=r"(rowData[5].x), "=r"(rowData[5].y),
-			"=r"(slot.x.w), "=r"(slot.x.y), "=r"(slot.x.z), "=r"(slot.x.x) //slot data to be saved
-			: "r"(rowData[1].x), "r"(rowData[1].y),
-			"l"(v[4]), "l"(v[5])
-			);
-
+		slot.y.w = 0;
 		data->round0.rows[row].slots[rowCnt].x = slot.x;
-
-		asm volatile(
-			"{\n\t"
-			".reg .b32 a,b;\n\t"
-			"mov.b64 {a, b}, %2;\n\t"
-			"prmt.b32 %0, %4, a, 9029;\n\t"
-			"prmt.b32 %1, %3, %4, 9029;\n\t"
-			"}\n"
-			: "=r"(slot.y.y), "=r"(slot.y.x)
-			: "l"(v[6]), "r"(rowData[5].x), "r"(rowData[5].y)
-			);
-
-		slot.y.z = (tid * 2) + 1;
-
-		data->round0.rows[row].slots[rowCnt].y = slot.y;*/
+		data->round0.rows[row].slots[rowCnt].y = slot.y;
 	}
 }
 
