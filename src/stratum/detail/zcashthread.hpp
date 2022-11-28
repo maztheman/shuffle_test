@@ -102,7 +102,6 @@ void static ZcashMinerThread(ZcashMiner<CPUSolver, CUDASolver, OPENCLSolver>* mi
 			// I = the block header minus nonce and solution.
 			CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
 			{
-				//std::lock_guard<std::mutex> lock{ *m_zmt.get() };
 				CEquihashInput I{ actualHeader };
 				ss << I;
 			}
@@ -135,13 +134,13 @@ void static ZcashMinerThread(ZcashMiner<CPUSolver, CUDASolver, OPENCLSolver>* mi
 					BOOST_LOG_CUSTOM(debug, pos) << "Checking solution against target...";
 
 					uint256 headerhash = actualHeader.GetHash();
-					if (UintToArith256(headerhash) > actualTarget) {
-						BOOST_LOG_CUSTOM(debug, pos) << "Too large: " << headerhash.ToString();
-//						return;
+					if (auto myheaderhash = UintToArith256(headerhash); myheaderhash > actualTarget) {
+						BOOST_LOG_CUSTOM(debug, pos) << "Too large: " << myheaderhash.ToString() << " vs. " << actualTarget.ToString();
+						return;
 					}
 
 					// Found a solution
-					BOOST_LOG_CUSTOM(debug, pos) << "Found solution with header hash: " << headerhash.ToString();
+					BOOST_LOG_CUSTOM(info, pos) << "Found solution with header hash: " << headerhash.ToString();
 					EquihashSolution solution{ bNonce, actualHeader.nSolution, actualTime, actualNonce1size };
 					miner->submitSolution(solution, actualJobId);
 				};

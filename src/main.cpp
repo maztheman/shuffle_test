@@ -3,6 +3,8 @@
 #include "mtm_solver.h"
 #include "api.h"
 
+#include "cuda_dj.hpp"
+
 #include <boost/log/core/core.hpp>
 #include <boost/log/core.hpp>
 #include <boost/log/trivial.hpp>
@@ -101,8 +103,7 @@ int main()
 	int cuda_bc = 0;
 	int cuda_tbpc = 0;
 
-    cuda_enabled[0] = 1;
-    cuda_enabled[1] = 1;
+    cuda_enabled[0] = 0;
     int log_level = 2;
 boost::log::add_console_log(
         std::clog,

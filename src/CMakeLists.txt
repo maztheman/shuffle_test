@@ -54,6 +54,9 @@ set(SRCS
     mtm_solver.cu
     sols.cpp
     main.cpp
+
+    cuda_dj.cu
+    eqcuda.cu
 )
 
 target_sources(shuffle_test PRIVATE ${SRCS})

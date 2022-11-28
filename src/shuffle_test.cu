@@ -154,12 +154,32 @@ __device__ __forceinline__ void rotate48(ulong value, ulong* retval)
 	ret2->x = __byte_perm(ret->x, ret->y, 0x5432);
 }
 
+union ab
+{
+	ulong a; 
+	uint2 b;
+};
+
+__device__ __forceinline__ ulong ROR2(const ulong aa, const uint offset) 
+{
+	uint2* aa_ = (uint2*)&aa;
+
+	ab result;
+	{
+		asm("shf.r.wrap.b32 %0, %1, %2, %3;" : "=r"(result.b.x) : "r"(aa_->y), "r"(aa_->x), "r"(offset));
+		asm("shf.r.wrap.b32 %0, %1, %2, %3;" : "=r"(result.b.y) : "r"(aa_->x), "r"(aa_->y), "r"(offset));
+	}
+	return result.a;
+}
+
 __device__ __forceinline__ uint get_lane_id()
 {
 	uint ret;
 	asm volatile("mov.u32 %0, %laneid;" : "=r"(ret));
 	return ret;
 }
+
+
 
 #define rotate(a, bits) ((a) << (bits)) | ((a) >> (64 - (bits)))
 
@@ -171,7 +191,9 @@ rotate40(vb ^ vc, &vb); \
 va = (va + vb + y); \
 rotate48(vd ^ va, &vd); \
 vc = (vc + vd); \
-vb = rotate((vb ^ vc), (ulong)64 - 63);
+vb = ROR2(vb ^ vc, 63U);
+
+//rotate((vb ^ vc), (ulong)64 - 63);
 
 /*
 
@@ -248,20 +270,26 @@ void kernel_round0(data_t* data, const uint4 *  bla)
 	uint laneid = get_lane_id();
 	__shared__ uint4 s_sv[8];
 
-	if (tid < 3) {
+	if (tid < 3)
+	{
 		data->candidates.sol_nr[tid] = 0;
 	}
 
 	ulong* sv = (ulong*)s_sv;
-	ulong v[16];
+	
+	union
+	{
+		ulong v[16];
+		uint  v32[32];
+		uint4 v_ui4[8];
+	};
 
-	if (threadIdx.x < 8) {
+	if (threadIdx.x < 8)
+	{
 		s_sv[threadIdx.x] = bla[threadIdx.x];
 	}
 
 	__syncthreads();
-
-	uint4* v_ui4 = (uint4*)v;
 
 	v_ui4[0] = s_sv[0];
 	v_ui4[1] = s_sv[1];
