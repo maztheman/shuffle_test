@@ -906,7 +906,7 @@ void kernel_round5(data_t* data)
 		count = s_count;
 	}
 
-	__shfl_sync(0xFFFFFFFF, count, 0);
+	count = __shfl_sync(0xFFFFFFFF, count, 0);
 
 	for (; tid < NR_SLOTS; tid += blockDim.x) {
 		uint4 slot_0;
