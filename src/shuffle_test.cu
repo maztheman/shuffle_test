@@ -1390,8 +1390,6 @@ void kernel_candidates(data_t* data)
 		}
 	}
 
-	__syncthreads();
-
 	cnt = __shfl_sync(0xFFFFFFFF, cnt, 0);
 
 	if (idx >= cnt) 
