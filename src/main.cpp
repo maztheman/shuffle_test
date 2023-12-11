@@ -119,6 +119,6 @@ int main()
 
 
 	//start_mining<MyMiner>(8080, 24, cuda_device_count, 0, 0, "equihash.f2pool.com", "5100", "maztheman.one", "", scSig);
-	//start_mining<MyMiner>(8080, 24, cuda_device_count, 0, 0, "zencash.f2pool.com", "3377", "maztheman.one", "", scSig);
+	start_mining<MyMiner>(8080, 24, cuda_device_count, 0, 0, "zencash.f2pool.com", "3377", "maztheman.one", "", scSig);
 //    start_mining<MyMiner>(8080, 24, cuda_device_count, 0, 0, "zec.f2pool.com", "3357", "maztheman.one", "", scSig);
 }
