@@ -1,5 +1,3 @@
-find_package(Boost 1.80.0 EXACT REQUIRED)
-
 include(CheckIncludeFile)
 include(TestBigEndian)
 include(CheckFunctionExists)
@@ -48,12 +46,18 @@ configure_file(stratum/config/bitcoin-config.hpp.cmake stratum/config/bitcoin-co
 add_executable(shuffle_test)
 
 set(SRCS 
+    api.cpp
     shuffle_test.cu
+    mtm_solver.cu
     sols.cpp
+    main.cpp
+
+    cuda_dj.cu
+    eqcuda.cu
 )
 
 target_sources(shuffle_test PRIVATE ${SRCS})
 target_compile_definitions(shuffle_test PRIVATE -DHAVE_CONFIG_HPP)
 target_include_directories(shuffle_test PRIVATE "." ${CMAKE_CURRENT_BINARY_DIR})
-target_link_libraries(shuffle_test PRIVATE Boost::Boost)
+target_link_libraries(shuffle_test PRIVATE Boost::asio Boost::log fmt::fmt)
 set_target_properties(shuffle_test PROPERTIES CUDA_ARCHITECTURES "61;72")

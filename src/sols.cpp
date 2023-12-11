@@ -4,14 +4,17 @@
 #include <cassert>
 #include <cstring>
 
-void compress(uint8_t *out, uint32_t *inputs, uint32_t n)
+static constexpr auto N = 1 << PARAM_K;
+
+void compress(uint8_t *out, uint32_t *inputs)
 {
+	
 	uint32_t byte_pos = 0;
 	int32_t bits_left = PREFIX + 1;
 	uint8_t x = 0;
 	uint8_t x_bits_used = 0;
 	uint8_t *pOut = out;
-	while (byte_pos < n)
+	while (byte_pos < N)
 	{
 		if (bits_left >= 8 - x_bits_used)
 		{
@@ -89,7 +92,7 @@ uint32_t verify_sol(sols_t *sols, unsigned sol_i)
 	sols->valid[sol_i] = 1;
 	// sort the pairs in place
 	for (uint32_t level = 0; level < PARAM_K; level++)
-		for (i = 0; i < (1 << PARAM_K); i += (2 << level))
+		for (i = 0; i < N; i += (2 << level))
 			sort_pair(&inputs[i], 1 << level);
 	return 1;
 }
@@ -103,7 +106,7 @@ uint32_t verify_sol(candidate_t *sols, unsigned sol_i, uint8_t (&valid)[16])
 	uint8_t tmp;
 	// look for duplicate inputs
 	memset(seen, 0, seen_len);
-	for (i = 0; i < (1 << PARAM_K); i++)
+	for (i = 0; i < N; i++)
 	{
 		tmp = seen[inputs[i] / 8];
 		seen[inputs[i] / 8] |= 1 << (inputs[i] & 7);
@@ -118,7 +121,7 @@ uint32_t verify_sol(candidate_t *sols, unsigned sol_i, uint8_t (&valid)[16])
 	valid[sol_i] = 1;
 	// sort the pairs in place
 	for (uint32_t level = 0; level < PARAM_K; level++)
-		for (i = 0; i < (1 << PARAM_K); i += (2 << level))
+		for (i = 0; i < N; i += (2 << level))
 			sort_pair(&inputs[i], 1 << level);
 	return 1;
 }

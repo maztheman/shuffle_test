@@ -118,6 +118,11 @@ public:
 
 }
 
-extern stratum::Speed speed(INTERVAL_SECONDS);;
+
+inline stratum::Speed& speed()
+{
+	static stratum::Speed instance(INTERVAL_SECONDS);
+	return instance;
+}
 
 #endif
